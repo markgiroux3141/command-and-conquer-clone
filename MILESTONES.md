@@ -50,10 +50,22 @@ p15 (cut content), hill01 (ant missions only). SHP shadow index 4 is drawn as a
 
 ## Phase 3 — Units on screen
 
-- [ ] Sprite renderer: shadow index translucency + house-color remap (indices 80–95)
-- [ ] Facings (32-frame rotation) + turret layering
-- [ ] Selection: click, drag-box, selection brackets, health bar
-- [ ] Cursor SHPs, basic mouse interaction
+- [x] Sprite renderer: shadow index translucency + house-color remap
+      (`src/game/render.cpp` + `house.cpp`; remaps built from PALETTE.CPS via
+      new CPS decoder, exactly like Init_Color_Remaps) (2026-07-06)
+- [x] Facings (32-frame rotation, BodyShape table) + turret layering
+      (1tnk–4tnk/jeep frames 32–63) (2026-07-06)
+- [x] Selection: click, drag-box, selection brackets, health bar (verified
+      headlessly via `mapview --select`; interactive path shares the code)
+      (2026-07-06)
+- [x] Cursor SHPs, basic mouse interaction (mouse.shp frame 0, OS cursor
+      hidden; untested beyond code review — check interactively) (2026-07-06)
+
+Gotchas learned: infantry art lives in `INSTALL/REDALERT/hires/` (not
+conquer). Civilians c3–c10 have no art — original uses C1's shapes with
+per-type remap tables (we fall back to c1). War factory is two-part art
+(weap.shp + weap2.shp roof). Shadow is still the 50% darken approximation,
+not the original fading tables.
 
 ## Phase 4 — Simulation core
 
@@ -86,6 +98,19 @@ p15 (cut content), hill01 (ant missions only). SHP shadow index 4 is drawn as a
 - [ ] SFX + EVA voice playback wired to events
 - [ ] Music jukebox (scores)
 - [ ] Main menu, in-game options, save/load
+
+## Phase 9 — Map editor (side quest; can start any time after Phase 4)
+
+Maps are pure data (template/icon grid + overlay grid + object lists), so an
+editor is mapview plus mouse input and a writer. Custom maps already load —
+skirmish maps are just INI files in `general/`.
+
+- [ ] LCW encoder + MapPack/OverlayPack writer (naive literal-run encoding is
+      valid LCW — ~20 lines; round-trip test: load → save → load → compare)
+- [ ] Template stamp palette UI (browse/place templates, eyedropper from map)
+- [ ] Overlay + terrain-object placement (ore brush, walls, trees)
+- [ ] Playable-bounds editing, [Waypoints] (start positions), map INI metadata
+- [ ] Smart terrain brushes (auto-pick shore/cliff transition pieces) — v2
 
 Out of scope for now: multiplayer, VQA-driven campaign FMVs, TD support (later).
 
@@ -121,5 +146,10 @@ carries the delta. Update this file's checkboxes *before* writing a handoff.
   LCW extracted to own module, map loader (game lib), mapview tool with
   terrain/overlay/terrain-object layers + scrolling. Verified by rendering
   missions in all three theaters and a 94×94 multiplayer map; renders match
-  expected RA look (shorelines/cliffs/bridges/ore all coherent). Next: Phase 3
-  (units on screen — sprite renderer with shadow tables + house-color remap).
+  expected RA look (shorelines/cliffs/bridges/ore all coherent). Phase 9
+  (map editor) added to plan. **Phase 3 also complete** (same session): CPS
+  decoder, house remaps from PALETTE.CPS, render module, map object parsing,
+  mapview draws structures/units/infantry with facings + turrets + selection
+  UI + cursor. Verified on scg01ea (Soviet base red, Greece jeeps blue,
+  war factory roof, brackets/health bars via --select). Next: Phase 4
+  (simulation core — game loop, rules.ini stats, movement/pathfinding).

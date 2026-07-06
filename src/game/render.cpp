@@ -1,0 +1,71 @@
+#include "game/render.h"
+
+#include <SDL.h>
+
+namespace game {
+
+Canvas Canvas::wrap(SDL_Surface* surf) {
+    Canvas c;
+    c.px = static_cast<uint32_t*>(surf->pixels);
+    c.pitch = surf->pitch / 4;
+    c.w = surf->w;
+    c.h = surf->h;
+    return c;
+}
+
+void blitIndexed(Canvas& c, const uint8_t* src, int sw, int sh, int dx, int dy,
+                 const fmt::Palette& pal, const BlitOptions& opts) {
+    for (int y = 0; y < sh; y++) {
+        int ty = dy + y;
+        if (ty < 0 || ty >= c.h)
+            continue;
+        for (int x = 0; x < sw; x++) {
+            int tx = dx + x;
+            if (tx < 0 || tx >= c.w)
+                continue;
+            uint8_t idx = src[y * sw + x];
+            if (opts.colorKey && idx == 0)
+                continue;
+            if (opts.shadow && idx == 4) {
+                // Approximates the original shadow fading table by halving
+                // the destination color.
+                uint32_t p = c.px[ty * c.pitch + tx];
+                c.px[ty * c.pitch + tx] = 0xff000000 | ((p >> 1) & 0x7f7f7f);
+                continue;
+            }
+            if (opts.remap)
+                idx = (*opts.remap)[idx];
+            auto col = pal.colors[idx];
+            c.px[ty * c.pitch + tx] =
+                0xff000000 | (uint32_t(col.r) << 16) | (uint32_t(col.g) << 8) | col.b;
+        }
+    }
+}
+
+void fillRect(Canvas& c, int dx, int dy, int w, int h, uint32_t argb) {
+    for (int y = dy; y < dy + h; y++) {
+        if (y < 0 || y >= c.h)
+            continue;
+        for (int x = dx; x < dx + w; x++) {
+            if (x < 0 || x >= c.w)
+                continue;
+            c.px[y * c.pitch + x] = argb;
+        }
+    }
+}
+
+void drawRect(Canvas& c, int dx, int dy, int w, int h, uint32_t argb) {
+    fillRect(c, dx, dy, w, 1, argb);
+    fillRect(c, dx, dy + h - 1, w, 1, argb);
+    fillRect(c, dx, dy, 1, h, argb);
+    fillRect(c, dx + w - 1, dy, 1, h, argb);
+}
+
+int facingToFrame(int facing) {
+    static const int kBodyShape[32] = {0,  31, 30, 29, 28, 27, 26, 25, 24, 23, 22,
+                                       21, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11,
+                                       10, 9,  8,  7,  6,  5,  4,  3,  2,  1};
+    return kBodyShape[(facing & 0xff) >> 3];
+}
+
+} // namespace game

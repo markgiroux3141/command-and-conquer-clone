@@ -2,58 +2,60 @@
 
 ## Read first
 
-1. `MILESTONES.md` — Phase 0–2 done and verified; **Phase 3 (units on screen)
-   is next and not yet started.**
-2. `README.md` — build commands and tool usage (incl. new `mapview`).
+1. `MILESTONES.md` — Phase 0–3 done and verified; **Phase 4 (simulation core)
+   is next and not yet started.** Phase 9 (map editor) queued as a side quest.
+2. `README.md` — build commands and tool usage (incl. `mapview`).
 3. `ASSETS.md` — where every asset lives.
 
-Don't re-read decoder sources (`src/formats/` — PAL/SHP/TMP/AUD/INI/LCW, all
-verified) or the map loader (`src/game/map.cpp`, verified in 3 theaters).
+Don't re-read `src/formats/` (PAL/SHP/TMP/AUD/INI/LCW/CPS decoders, verified)
+or `src/game/` (map loader, house remaps, render helpers — all verified via
+mapview renders in three theaters).
 
 ## Current state
 
 - Everything compiles clean: `cmake --build build --config Release` (MSVC).
-- `mapview <map.ini> <data-root> [--dump out.bmp] [--full]` renders any RA map
-  (terrain + overlays + terrain objects) and scrolls (WASD/edges) in a window.
-- `src/game/` is the new engine library (currently: map loader + generated
-  `template_table.h`; regenerate with `python tools/gen_template_table.py`).
-- No simulation/game loop exists yet.
+- `mapview <map.ini> <data-root>` is the de-facto game shell: renders any RA
+  map with terrain/overlays/terrain-objects plus scenario structures, units
+  and infantry (house colors, facings, turrets), interactive scrolling,
+  click/drag-box selection with brackets + health bars, SHP cursor.
+- No simulation exists: nothing moves, no game loop, no rules.ini stats.
 
-## Next task: Phase 3 — units on screen
+## Next task: Phase 4 — simulation core
 
 Suggested order:
-1. **Sprite renderer** (`src/game/` renderer module, not a throwaway tool):
-   palettized blit with per-pixel effects — shadow index 4 via the theater
-   shadow table (mapview currently fakes it with 50% darken; the real fading
-   tables can be computed like OpenRA does or read from the palette), and
-   house-color remap of palette indices 80–95.
-2. **Facings**: unit SHPs pack 32 hull facings (+32 turret frames for tanks,
-   e.g. `4tnk.shp`). Map a 0–255 facing to frame index; render turret as second
-   layer at same cell.
-3. **Selection UI**: click hit-test, drag box, corner brackets, health bar.
-   Cursor SHPs are in `data/assets/red_alert/*/MAIN/conquer/mouse.shp`.
-4. Extend mapview (or start `game.exe`) to place a few units from the map INI
-   `[UNITS]`/`[STRUCTURES]` sections — format: see original `INI.CPP` or any
-   mission file (`iniquery` helps).
+1. **Fixed-tick loop**: split mapview's interactive mode into sim tick
+   (default 15/s like RA) + render; probably time to promote it to `game.exe`
+   and keep mapview as pure viewer.
+2. **rules.ini stats**: load `red_alert/*/INSTALL/REDALERT/local/rules.ini`
+   ([JEEP] Speed=, Strength=...) into unit type table. INI parser handles it
+   already (verified in Phase 1).
+3. **Movement**: cell occupancy grid from map + structures; A* over it;
+   right-click move orders for selected units; smooth per-tick interpolation
+   cell→cell; rotate facing toward heading (TD/RA turn logic: step facing by
+   ROT per tick).
+4. **Shroud** can wait until the end of the phase.
 
 ## Gotchas not in the docs
 
-- Map template IDs **0 and 255 both mean clear** (CELL.CPP Recalc_Attributes);
-  handled in `map.cpp`. Clear icon = `(x&3)|((y&3)<<2)`.
-- Overlay frame selection: ore = `_adj[]` table by 8-neighbor resource count,
-  gems capped at frame 2, walls = N|E<<1|S<<2|W<<3 bitmask of same-type
-  neighbors (see mapview.cpp, ported from CELL.CPP).
-- b4/b5/b6/p15 template art doesn't exist in any MIX (cut content); hill01 only
-  in expansion MIXes. Loader tolerates missing art.
-- BMP→PNG for viewing: PowerShell System.Drawing snippet in README workflow;
-  Read tool renders PNGs. `*.bmp` is gitignored.
+- Infantry art is in `INSTALL/REDALERT/hires/`, not conquer. Civilians c3–c10
+  have no art; fall back to c1 (mapview does).
+- War factory = weap.shp + weap2.shp roof overlay (mapview handles `<type>2`).
+- Structures like BARL (explosive barrels) appear in [STRUCTURES]; their
+  selection boxes look oversized because SHP frames have empty margins —
+  cosmetic, fix someday with trimmed bounds.
+- Facing 0 = north, increases clockwise, 32 per compass step;
+  frame = BodyShape[facing>>3] (`game::facingToFrame`). Infantry standing
+  frame = `(8 - (facing>>5)) & 7`.
+- House→color: HDATA.CPP mapping in `game/house.cpp` (Greece=LtBlue, USSR=Red,
+  England=Green...). Remaps built from PALETTE.CPS row 0 → row pcolor.
+- Shadow index 4 = 50% darken approximation (not original fading tables).
 
-## Verification recipe for Phase 3
+## Verification recipe for Phase 4
 
-Render a mission map with a known starting unit layout (scg01ea has Allied
-units at bottom) via the extended viewer `--dump`, view the PNG: units should
-sit on correct cells, facings visibly distinct, house colors correct (Allies
-blue/gold, Soviets red), shadows translucent not green.
+Interactive: select a jeep on scg01ea, right-click across the map — it should
+path around water/cliffs, rotate smoothly, and arrive. Headless: add a
+`--sim-ticks N --move unit,cell` style debug flag and dump before/after BMPs;
+compare positions.
 
 ## Context handoff protocol
 

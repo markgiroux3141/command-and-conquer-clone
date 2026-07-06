@@ -134,6 +134,55 @@ MapFile MapFile::load(const std::string& iniPath) {
     for (size_t i = 0; i < total; i++)
         map.cells[i].overlay = overlayData[i];
 
+    // Comma-separated object lines. Field order per the original Read_INI
+    // code: UNITS/SHIPS house,type,health,cell,facing,mission,trigger;
+    // INFANTRY house,type,health,cell,subcell,mission,facing,trigger;
+    // STRUCTURES house,type,health,cell,facing,trigger,...
+    auto split = [](const std::string& s) {
+        std::vector<std::string> out;
+        size_t start = 0;
+        while (start <= s.size()) {
+            size_t comma = s.find(',', start);
+            if (comma == std::string::npos)
+                comma = s.size();
+            std::string field = s.substr(start, comma - start);
+            while (!field.empty() && field.front() == ' ')
+                field.erase(field.begin());
+            while (!field.empty() && field.back() == ' ')
+                field.pop_back();
+            out.push_back(field);
+            start = comma + 1;
+        }
+        return out;
+    };
+    auto parseObjects = [&](const char* section, std::vector<Object>& out, bool isInfantry) {
+        const auto* sec = ini.section(section);
+        if (!sec)
+            return;
+        for (const auto& [key, value] : sec->entries) {
+            auto f = split(value);
+            if (f.size() < 5)
+                continue;
+            Object obj;
+            obj.house = f[0];
+            obj.type = toLower(f[1]);
+            obj.health = std::stoi(f[2]);
+            obj.cell = std::stoi(f[3]);
+            if (isInfantry) {
+                obj.subcell = std::stoi(f[4]);
+                obj.facing = f.size() > 6 ? std::stoi(f[6]) : 0;
+            } else {
+                obj.facing = std::stoi(f[4]);
+            }
+            if (obj.cell >= 0 && obj.cell < int(total))
+                out.push_back(std::move(obj));
+        }
+    };
+    parseObjects("UNITS", map.units, false);
+    parseObjects("SHIPS", map.units, false);
+    parseObjects("INFANTRY", map.infantry, true);
+    parseObjects("STRUCTURES", map.structures, false);
+
     if (const auto* terrain = ini.section("TERRAIN")) {
         for (const auto& [key, value] : terrain->entries) {
             TerrainObject obj;

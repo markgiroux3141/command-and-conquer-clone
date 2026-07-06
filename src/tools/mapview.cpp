@@ -1,20 +1,18 @@
-// mapview — render a Red Alert map (terrain + overlay + terrain objects).
+// mapview — render a Red Alert map: terrain, overlays, terrain objects, and
+// the pre-placed units/structures from the scenario.
 //
 //   mapview <map.ini> <data-root> [--dump out.bmp] [--scale N] [--full]
 //
 // <data-root> is a game data root like data/assets/red_alert/allied; theater
-// art is read from <root>/MAIN/<theater>/ and the palette from
-// <root>/INSTALL/REDALERT/local/<theater>.pal.
+// art is read from <root>/MAIN/<theater>/, unit/structure art from
+// <root>/MAIN/conquer/, palettes from <root>/INSTALL/REDALERT/local/.
 //
-// By default only the playable bounds ([Map] X/Y/Width/Height) are rendered;
-// --full renders the whole 128x128 grid. Without --dump, opens a window with
-// WASD/arrow + mouse edge scrolling.
-//
-// Missing template art renders magenta; empty template slots fall back to the
-// clear tile like the original engine.
+// Interactive mode: WASD/arrow/mouse-edge scrolling, left-click or drag-box to
+// select units (brackets + health bar), Esc quits. --dump renders headlessly.
 
 #include <SDL.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -22,14 +20,19 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "formats/palette.h"
 #include "formats/shp.h"
 #include "formats/tmp.h"
+#include "game/house.h"
 #include "game/map.h"
+#include "game/render.h"
 #include "game/template_table.h"
 
 namespace {
+
+constexpr int kTile = 24;
 
 int intArg(int argc, char** argv, const char* name, int fallback) {
     for (int i = 3; i < argc - 1; i++)
@@ -60,17 +63,19 @@ std::string theaterDirName(const game::MapFile& map) {
     return "temperat";
 }
 
-// Caches theater art; art names are template/overlay/terrain base names.
+// Caches theater art (TMP templates + theater/conquer SHPs).
 class ArtCache {
 public:
-    ArtCache(std::string theaterDir, std::string ext)
-        : dir_(std::move(theaterDir)), ext_(std::move(ext)) {}
+    ArtCache(std::string theaterDir, std::string conquerDir, std::string hiresDir,
+             std::string ext)
+        : theaterDir_(std::move(theaterDir)), conquerDir_(std::move(conquerDir)),
+          hiresDir_(std::move(hiresDir)), ext_(std::move(ext)) {}
 
     const fmt::TmpFile* tmp(const std::string& name) {
         auto it = tmps_.find(name);
         if (it == tmps_.end()) {
             std::optional<fmt::TmpFile> v;
-            std::string path = dir_ + "/" + name + ext_;
+            std::string path = theaterDir_ + "/" + name + ext_;
             if (std::filesystem::exists(path))
                 v = fmt::TmpFile::load(path);
             it = tmps_.emplace(name, std::move(v)).first;
@@ -78,19 +83,22 @@ public:
         return it->second ? &*it->second : nullptr;
     }
 
-    // Overlay/terrain art: theater-extension file that is SHP format inside.
+    // SHP art: theater-extension file (overlays, trees), conquer .shp
+    // (vehicles, structures, walls, cursors) or hires .shp (infantry).
     const fmt::ShpFile* shp(const std::string& name) {
         auto it = shps_.find(name);
         if (it == shps_.end()) {
             std::optional<fmt::ShpFile> v;
-            std::string path = dir_ + "/" + name + ext_;
-            if (!std::filesystem::exists(path)) // walls etc. live in conquer as .shp
-                path = dir_ + "/../conquer/" + name + ".shp";
+            std::string path = theaterDir_ + "/" + name + ext_;
+            if (!std::filesystem::exists(path))
+                path = conquerDir_ + "/" + name + ".shp";
+            if (!std::filesystem::exists(path))
+                path = hiresDir_ + "/" + name + ".shp";
             if (std::filesystem::exists(path)) {
                 try {
                     v = fmt::ShpFile::load(path);
                 } catch (const std::exception&) {
-                    // not SHP after all; leave missing
+                    // wrong format; leave missing
                 }
             }
             it = shps_.emplace(name, std::move(v)).first;
@@ -99,54 +107,63 @@ public:
     }
 
 private:
-    std::string dir_, ext_;
+    std::string theaterDir_, conquerDir_, hiresDir_, ext_;
     std::unordered_map<std::string, std::optional<fmt::TmpFile>> tmps_;
     std::unordered_map<std::string, std::optional<fmt::ShpFile>> shps_;
 };
 
-struct Canvas {
-    SDL_Surface* surf = nullptr;
-    uint32_t* px = nullptr;
-    int pitch = 0; // in pixels
-    int w = 0, h = 0;
+// A placed object resolved to art + draw position (world pixels).
+struct DrawObject {
+    const fmt::ShpFile* shp = nullptr;
+    int frame = 0;
+    int turretFrame = -1; // -1 = no turret layer
+    int x = 0, y = 0;     // top-left, world pixels
+    const game::RemapTable* remap = nullptr;
+    bool selectable = false;
+    int health = 256; // 0-256
+    bool selected = false;
 };
 
-void blitIndexed(Canvas& c, const uint8_t* src, int sw, int sh, int dx, int dy,
-                 const fmt::Palette& pal, bool colorKey) {
-    for (int y = 0; y < sh; y++) {
-        int ty = dy + y;
-        if (ty < 0 || ty >= c.h)
-            continue;
-        for (int x = 0; x < sw; x++) {
-            int tx = dx + x;
-            if (tx < 0 || tx >= c.w)
-                continue;
-            uint8_t idx = src[y * sw + x];
-            if (colorKey && idx == 0)
-                continue; // SHP transparency
-            if (colorKey && idx == 4) {
-                // SHP shadow index: darken what's underneath (real shadow
-                // tables come with the Phase 3 sprite renderer).
-                uint32_t p = c.px[ty * c.pitch + tx];
-                c.px[ty * c.pitch + tx] = 0xff000000 | ((p >> 1) & 0x7f7f7f);
-                continue;
-            }
-            auto col = pal.colors[idx];
-            c.px[ty * c.pitch + tx] =
-                0xff000000 | (uint32_t(col.r) << 16) | (uint32_t(col.g) << 8) | col.b;
-        }
-    }
+// Vehicles whose SHP packs 32 turret frames after the 32 hull facings.
+bool hasTurret(const std::string& type) {
+    static const char* kTurreted[] = {"1tnk", "2tnk", "3tnk", "4tnk", "jeep"};
+    for (const char* t : kTurreted)
+        if (type == t)
+            return true;
+    return false;
 }
 
-void fillRect(Canvas& c, int dx, int dy, int w, int h, uint32_t argb) {
-    for (int y = dy; y < dy + h; y++) {
-        if (y < 0 || y >= c.h)
-            continue;
-        for (int x = dx; x < dx + w; x++) {
-            if (x < 0 || x >= c.w)
-                continue;
-            c.px[y * c.pitch + x] = argb;
-        }
+void drawObject(game::Canvas& c, const DrawObject& o, const fmt::Palette& pal,
+                int offX, int offY) {
+    game::BlitOptions opts;
+    opts.colorKey = true;
+    opts.shadow = true;
+    opts.remap = o.remap;
+    const auto& frame = o.shp->frames[o.frame];
+    blitIndexed(c, frame.data(), o.shp->width, o.shp->height, o.x - offX, o.y - offY,
+                pal, opts);
+    if (o.turretFrame >= 0 && o.turretFrame < int(o.shp->frames.size()))
+        blitIndexed(c, o.shp->frames[o.turretFrame].data(), o.shp->width, o.shp->height,
+                    o.x - offX, o.y - offY, pal, opts);
+
+    if (o.selected) {
+        int x = o.x - offX, y = o.y - offY, w = o.shp->width, h = o.shp->height;
+        // Corner brackets.
+        const uint32_t kWhite = 0xffffffff;
+        int len = std::max(3, w / 5);
+        game::fillRect(c, x, y, len, 1, kWhite);
+        game::fillRect(c, x, y, 1, len, kWhite);
+        game::fillRect(c, x + w - len, y, len, 1, kWhite);
+        game::fillRect(c, x + w - 1, y, 1, len, kWhite);
+        game::fillRect(c, x, y + h - 1, len, 1, kWhite);
+        game::fillRect(c, x, y + h - len, 1, len, kWhite);
+        game::fillRect(c, x + w - len, y + h - 1, len, 1, kWhite);
+        game::fillRect(c, x + w - 1, y + h - len, 1, len, kWhite);
+        // Health bar just above the sprite.
+        int frac = std::clamp(o.health, 0, 256);
+        uint32_t color = frac > 170 ? 0xff00c000 : frac > 85 ? 0xffe0e000 : 0xffc00000;
+        game::drawRect(c, x, y - 5, w, 4, 0xff000000);
+        game::fillRect(c, x + 1, y - 4, (w - 2) * frac / 256, 2, color);
     }
 }
 
@@ -166,46 +183,39 @@ int main(int argc, char** argv) {
         int scale = intArg(argc, argv, "--scale", 1);
         bool full = flagArg(argc, argv, "--full");
 
-        std::string theaterDir = root + "/MAIN/" + theaterDirName(map);
-        std::string palPath =
-            root + "/INSTALL/REDALERT/local/" + map.theaterPalette() + ".pal";
-        auto pal = fmt::Palette::load(palPath);
-        ArtCache art(theaterDir, map.theaterExt());
+        std::string localDir = root + "/INSTALL/REDALERT/local";
+        auto pal = fmt::Palette::load(localDir + "/" + map.theaterPalette() + ".pal");
+        auto remaps = game::buildRemaps(localDir + "/palette.cps");
+        ArtCache art(root + "/MAIN/" + theaterDirName(map), root + "/MAIN/conquer",
+                     root + "/INSTALL/REDALERT/hires", map.theaterExt());
 
-        std::printf("%s: theater %s, bounds %d,%d %dx%d\n", argv[1], map.theater.c_str(),
-                    map.x, map.y, map.width, map.height);
+        std::printf("%s: theater %s, bounds %d,%d %dx%d, %zu units, %zu infantry, "
+                    "%zu structures\n",
+                    argv[1], map.theater.c_str(), map.x, map.y, map.width, map.height,
+                    map.units.size(), map.infantry.size(), map.structures.size());
 
-        const int kTile = 24;
         int cx0 = full ? 0 : map.x;
         int cy0 = full ? 0 : map.y;
         int cw = full ? game::MapFile::kSize : map.width;
         int ch = full ? game::MapFile::kSize : map.height;
 
-        Canvas c;
-        c.w = cw * kTile;
-        c.h = ch * kTile;
-        c.surf = SDL_CreateRGBSurfaceWithFormat(0, c.w, c.h, 32, SDL_PIXELFORMAT_ARGB8888);
-        if (!c.surf)
+        SDL_Surface* mapSurf = SDL_CreateRGBSurfaceWithFormat(0, cw * kTile, ch * kTile,
+                                                              32, SDL_PIXELFORMAT_ARGB8888);
+        if (!mapSurf)
             throw std::runtime_error(SDL_GetError());
-        c.px = static_cast<uint32_t*>(c.surf->pixels);
-        c.pitch = c.surf->pitch / 4;
+        game::Canvas mc = game::Canvas::wrap(mapSurf);
 
         const fmt::TmpFile* clear = art.tmp("clear1");
         if (!clear)
-            throw std::runtime_error("missing clear1 template in " + theaterDir);
+            throw std::runtime_error("missing clear1 template");
 
+        // ---- Terrain layer ----
         int missingTemplates = 0;
-        std::unordered_map<uint16_t, int> missingIds;
-
-        // Terrain layer.
         for (int cy = 0; cy < ch; cy++) {
             for (int cx = 0; cx < cw; cx++) {
                 int mapX = cx0 + cx, mapY = cy0 + cy;
                 const auto& cell = map.cells[mapY * game::MapFile::kSize + mapX];
                 int dx = cx * kTile, dy = cy * kTile;
-
-                // CellClass::Clear_Icon(): pseudo-random variation from position.
-                int clearIcon = (mapX & 3) | ((mapY & 3) << 2);
 
                 const fmt::TmpFile* t = nullptr;
                 int icon = 0;
@@ -214,29 +224,27 @@ int main(int argc, char** argv) {
                     icon = cell.icon;
                     if (!t) {
                         missingTemplates++;
-                        missingIds[cell.templateId]++;
-                    }
-                }
-                if (t && (icon >= int(t->tiles.size()) || t->tiles[icon].empty())) {
-                    t = nullptr; // empty slot: engine falls back to clear
-                }
-                if (!t) {
-                    if (cell.templateId != 0xffff && cell.templateId < game::kTemplateCount &&
-                        !art.tmp(game::kTemplateTable[cell.templateId].name)) {
-                        fillRect(c, dx, dy, kTile, kTile, 0xffff00ff); // missing art
+                        game::fillRect(mc, dx, dy, kTile, kTile, 0xffff00ff);
                         continue;
                     }
-                    t = clear;
-                    icon = clearIcon;
                 }
-                blitIndexed(c, t->tiles[icon].data(), t->tileWidth, t->tileHeight, dx, dy,
-                            pal, false);
+                if (t && (icon >= int(t->tiles.size()) || t->tiles[icon].empty()))
+                    t = nullptr; // empty slot: falls back to clear
+                if (!t) {
+                    t = clear;
+                    icon = (mapX & 3) | ((mapY & 3) << 2); // Clear_Icon()
+                }
+                blitIndexed(mc, t->tiles[icon].data(), t->tileWidth, t->tileHeight, dx, dy,
+                            pal);
             }
         }
+        if (missingTemplates)
+            std::printf("note: %d cells reference missing template art (magenta)\n",
+                        missingTemplates);
 
-        // Overlay layer (ore, gems, walls, crates). Frame selection follows
-        // CELL.CPP: ore/gems by adjacent-resource count (Tiberium_Adjust),
-        // walls by N/E/S/W same-wall bitmask (Wall_Update).
+        // ---- Overlay layer ----
+        // Frame selection per CELL.CPP: ore/gems by adjacent-resource count
+        // (Tiberium_Adjust), walls by N/E/S/W same-wall bitmask (Wall_Update).
         auto overlayAt = [&](int mx, int my) -> int {
             if (mx < 0 || mx >= game::MapFile::kSize || my < 0 || my >= game::MapFile::kSize)
                 return 0xff;
@@ -276,77 +284,197 @@ int main(int argc, char** argv) {
                     if (overlayAt(mapX - 1, mapY) == o)
                         frame |= 8;
                 }
-                if (frame >= int(s->frames.size()))
-                    frame = int(s->frames.size()) - 1;
-                blitIndexed(c, s->frames[frame].data(), s->width, s->height, cx * kTile,
-                            cy * kTile, pal, true);
+                frame = std::min(frame, int(s->frames.size()) - 1);
+                game::BlitOptions opts;
+                opts.colorKey = true;
+                opts.shadow = true;
+                blitIndexed(mc, s->frames[frame].data(), s->width, s->height, cx * kTile,
+                            cy * kTile, pal, opts);
             }
         }
 
-        // Terrain objects (trees, mines): SHP anchored at the cell's top-left.
+        // ---- Terrain objects (trees, mines) ----
         for (const auto& obj : map.terrain) {
-            int mapX = obj.cell % game::MapFile::kSize;
-            int mapY = obj.cell / game::MapFile::kSize;
             const fmt::ShpFile* s = art.shp(obj.name);
             if (!s || s->frames.empty())
                 continue;
-            blitIndexed(c, s->frames[0].data(), s->width, s->height, (mapX - cx0) * kTile,
-                        (mapY - cy0) * kTile, pal, true);
+            game::BlitOptions opts;
+            opts.colorKey = true;
+            opts.shadow = true;
+            blitIndexed(mc, s->frames[0].data(), s->width, s->height,
+                        (obj.cell % game::MapFile::kSize - cx0) * kTile,
+                        (obj.cell / game::MapFile::kSize - cy0) * kTile, pal, opts);
         }
 
-        if (missingTemplates) {
-            std::printf("note: %d cells reference missing template art (magenta)\n",
-                        missingTemplates);
-            for (const auto& [id, count] : missingIds)
-                std::printf("  id %u (%s): %d cells\n", id,
-                            id < game::kTemplateCount ? game::kTemplateTable[id].name : "?",
-                            count);
+        // ---- Resolve scenario objects to draw list ----
+        std::vector<DrawObject> objects;
+        auto cellPx = [&](int cell) {
+            return std::pair<int, int>{(cell % game::MapFile::kSize - cx0) * kTile,
+                                       (cell / game::MapFile::kSize - cy0) * kTile};
+        };
+        for (const auto& s : map.structures) {
+            const fmt::ShpFile* shp = art.shp(s.type);
+            if (!shp || shp->frames.empty()) {
+                std::printf("note: missing structure art: %s\n", s.type.c_str());
+                continue;
+            }
+            DrawObject o;
+            o.shp = shp;
+            o.frame = 0;
+            auto [px, py] = cellPx(s.cell);
+            o.x = px;
+            o.y = py;
+            o.remap = &remaps[size_t(game::houseColor(s.house))];
+            o.selectable = true;
+            o.health = s.health;
+            objects.push_back(o);
+            // Two-part buildings (war factory): the roof lives in a second
+            // SHP drawn over the base.
+            if (const fmt::ShpFile* top = art.shp(s.type + "2")) {
+                DrawObject o2 = o;
+                o2.shp = top;
+                o2.selectable = false;
+                objects.push_back(o2);
+            }
         }
-
-        // Optional integer upscale.
-        SDL_Surface* outSurf = c.surf;
-        if (scale > 1) {
-            outSurf = SDL_CreateRGBSurfaceWithFormat(0, c.w * scale, c.h * scale, 32,
-                                                     SDL_PIXELFORMAT_ARGB8888);
-            if (!outSurf)
-                throw std::runtime_error(SDL_GetError());
-            SDL_BlitScaled(c.surf, nullptr, outSurf, nullptr);
+        for (const auto& u : map.units) {
+            const fmt::ShpFile* shp = art.shp(u.type);
+            if (!shp || shp->frames.empty()) {
+                std::printf("note: missing unit art: %s\n", u.type.c_str());
+                continue;
+            }
+            DrawObject o;
+            o.shp = shp;
+            o.frame = game::facingToFrame(u.facing) % int(shp->frames.size());
+            if (hasTurret(u.type) && shp->frames.size() >= 64)
+                o.turretFrame = 32 + game::facingToFrame(u.facing);
+            auto [px, py] = cellPx(u.cell);
+            o.x = px + kTile / 2 - shp->width / 2; // centered in cell
+            o.y = py + kTile / 2 - shp->height / 2;
+            o.remap = &remaps[size_t(game::houseColor(u.house))];
+            o.selectable = true;
+            o.health = u.health;
+            objects.push_back(o);
         }
+        for (const auto& inf : map.infantry) {
+            const fmt::ShpFile* shp = art.shp(inf.type);
+            // RA ships no art for civilians c3-c10; the original draws them
+            // with C1's shapes and a per-type color remap.
+            if ((!shp || shp->frames.empty()) && inf.type[0] == 'c' &&
+                std::isdigit((unsigned char)inf.type[1]))
+                shp = art.shp("c1");
+            if (!shp || shp->frames.empty()) {
+                std::printf("note: missing infantry art: %s\n", inf.type.c_str());
+                continue;
+            }
+            // Sub-cell spots: center, UL, UR, LL, LR.
+            static const int kSubX[5] = {12, 6, 18, 6, 18};
+            static const int kSubY[5] = {12, 6, 6, 18, 18};
+            int sub = std::clamp(inf.subcell, 0, 4);
+            DrawObject o;
+            o.shp = shp;
+            // Standing frames: one per 8 facings at the start of the SHP.
+            o.frame = (8 - ((inf.facing & 0xff) >> 5)) & 7;
+            auto [px, py] = cellPx(inf.cell);
+            o.x = px + kSubX[sub] - shp->width / 2;
+            o.y = py + kSubY[sub] - shp->height / 2;
+            o.remap = &remaps[size_t(game::houseColor(inf.house))];
+            o.selectable = true;
+            o.health = inf.health;
+            objects.push_back(o);
+        }
+        // Painter's order: draw top rows first.
+        std::stable_sort(objects.begin(), objects.end(),
+                         [](const DrawObject& a, const DrawObject& b) { return a.y < b.y; });
 
+        // ---- Headless dump: bake objects into the map surface ----
         if (dumpPath) {
+            if (flagArg(argc, argv, "--select")) // debug: show selection UI
+                for (auto& o : objects)
+                    o.selected = o.selectable;
+            for (const auto& o : objects)
+                drawObject(mc, o, pal, 0, 0);
+
+            SDL_Surface* outSurf = mapSurf;
+            if (scale > 1) {
+                outSurf = SDL_CreateRGBSurfaceWithFormat(0, mapSurf->w * scale,
+                                                         mapSurf->h * scale, 32,
+                                                         SDL_PIXELFORMAT_ARGB8888);
+                if (!outSurf)
+                    throw std::runtime_error(SDL_GetError());
+                SDL_BlitScaled(mapSurf, nullptr, outSurf, nullptr);
+            }
             if (SDL_SaveBMP(outSurf, dumpPath) != 0)
                 throw std::runtime_error(SDL_GetError());
             std::printf("wrote %s (%dx%d)\n", dumpPath, outSurf->w, outSurf->h);
             return 0;
         }
 
+        // ---- Interactive mode ----
         if (SDL_Init(SDL_INIT_VIDEO) != 0)
             throw std::runtime_error(SDL_GetError());
-        int winW = std::min(outSurf->w, 1280), winH = std::min(outSurf->h, 800);
+        int winW = std::min(mapSurf->w, 1280), winH = std::min(mapSurf->h, 800);
         SDL_Window* win = SDL_CreateWindow("mapview", SDL_WINDOWPOS_CENTERED,
                                            SDL_WINDOWPOS_CENTERED, winW, winH, 0);
         if (!win)
             throw std::runtime_error(SDL_GetError());
+        SDL_ShowCursor(SDL_DISABLE);
+        const fmt::ShpFile* cursor = art.shp("mouse");
 
         float camX = 0, camY = 0;
-        const float kSpeed = 480.0f; // px/s
-        const int kEdge = 16;        // edge-scroll margin
+        const float kSpeed = 480.0f;
+        const int kEdge = 16;
+        bool dragging = false;
+        int dragX0 = 0, dragY0 = 0;
         uint32_t last = SDL_GetTicks();
         bool quit = false;
         while (!quit) {
+            int mx, my;
+            uint32_t mstate = SDL_GetMouseState(&mx, &my);
+
             SDL_Event e;
-            while (SDL_PollEvent(&e))
+            while (SDL_PollEvent(&e)) {
                 if (e.type == SDL_QUIT ||
                     (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE))
                     quit = true;
+                if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
+                    dragging = true;
+                    dragX0 = e.button.x;
+                    dragY0 = e.button.y;
+                }
+                if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT &&
+                    dragging) {
+                    dragging = false;
+                    int x0 = std::min(dragX0, e.button.x) + int(camX);
+                    int y0 = std::min(dragY0, e.button.y) + int(camY);
+                    int x1 = std::max(dragX0, e.button.x) + int(camX);
+                    int y1 = std::max(dragY0, e.button.y) + int(camY);
+                    bool box = (x1 - x0) > 4 || (y1 - y0) > 4;
+                    for (auto& o : objects)
+                        o.selected = false;
+                    if (box) {
+                        for (auto& o : objects)
+                            if (o.selectable && o.x < x1 && o.x + o.shp->width > x0 &&
+                                o.y < y1 && o.y + o.shp->height > y0)
+                                o.selected = true;
+                    } else {
+                        // Topmost object under the click.
+                        for (auto it = objects.rbegin(); it != objects.rend(); ++it) {
+                            if (it->selectable && x1 >= it->x && x1 < it->x + it->shp->width &&
+                                y1 >= it->y && y1 < it->y + it->shp->height) {
+                                it->selected = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
 
             uint32_t now = SDL_GetTicks();
             float dt = float(now - last) / 1000.0f;
             last = now;
 
             const Uint8* keys = SDL_GetKeyboardState(nullptr);
-            int mx, my;
-            SDL_GetMouseState(&mx, &my);
             float dx = 0, dy = 0;
             if (keys[SDL_SCANCODE_A] || keys[SDL_SCANCODE_LEFT] || mx < kEdge)
                 dx -= 1;
@@ -356,11 +484,29 @@ int main(int argc, char** argv) {
                 dy -= 1;
             if (keys[SDL_SCANCODE_S] || keys[SDL_SCANCODE_DOWN] || my >= winH - kEdge)
                 dy += 1;
-            camX = std::max(0.0f, std::min(camX + dx * kSpeed * dt, float(outSurf->w - winW)));
-            camY = std::max(0.0f, std::min(camY + dy * kSpeed * dt, float(outSurf->h - winH)));
+            camX = std::clamp(camX + dx * kSpeed * dt, 0.0f, float(mapSurf->w - winW));
+            camY = std::clamp(camY + dy * kSpeed * dt, 0.0f, float(mapSurf->h - winH));
 
+            SDL_Surface* wsurf = SDL_GetWindowSurface(win);
             SDL_Rect src{int(camX), int(camY), winW, winH};
-            SDL_BlitSurface(outSurf, &src, SDL_GetWindowSurface(win), nullptr);
+            SDL_BlitSurface(mapSurf, &src, wsurf, nullptr);
+
+            game::Canvas wc = game::Canvas::wrap(wsurf);
+            for (const auto& o : objects)
+                drawObject(wc, o, pal, int(camX), int(camY));
+
+            if (dragging && (mstate & SDL_BUTTON_LMASK))
+                game::drawRect(wc, std::min(dragX0, mx), std::min(dragY0, my),
+                               std::abs(mx - dragX0) + 1, std::abs(my - dragY0) + 1,
+                               0xffffffff);
+
+            if (cursor && !cursor->frames.empty()) {
+                game::BlitOptions copts;
+                copts.colorKey = true;
+                blitIndexed(wc, cursor->frames[0].data(), cursor->width, cursor->height,
+                            mx, my, pal, copts);
+            }
+
             SDL_UpdateWindowSurface(win);
             SDL_Delay(16);
         }

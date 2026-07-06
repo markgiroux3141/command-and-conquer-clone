@@ -28,6 +28,19 @@ struct MapFile {
     };
     std::vector<TerrainObject> terrain;
 
+    // Pre-placed objects from [UNITS]/[INFANTRY]/[STRUCTURES]/[SHIPS].
+    struct Object {
+        std::string house;   // "Greece", "USSR", "Multi1", ...
+        std::string type;    // art/type name lowercased: "jeep", "e1", "fact"
+        int health = 256;    // 0-256
+        int cell = 0;        // y*kSize + x
+        int facing = 0;      // 0-255, 0 = north
+        int subcell = 0;     // infantry only: 0 = center, 1-4 = corners
+    };
+    std::vector<Object> units;      // includes ships
+    std::vector<Object> infantry;
+    std::vector<Object> structures;
+
     static MapFile load(const std::string& iniPath);
 
     // Theater art extension: ".tem", ".sno" or ".int".

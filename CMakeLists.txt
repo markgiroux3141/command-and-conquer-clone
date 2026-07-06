@@ -10,6 +10,7 @@ find_package(SDL2 REQUIRED)
 
 add_library(formats STATIC
     src/formats/aud.cpp
+    src/formats/cps.cpp
     src/formats/ini.cpp
     src/formats/lcw.cpp
     src/formats/palette.cpp
@@ -19,9 +20,11 @@ add_library(formats STATIC
 target_include_directories(formats PUBLIC src)
 
 add_library(game STATIC
+    src/game/house.cpp
     src/game/map.cpp
+    src/game/render.cpp
 )
-target_link_libraries(game PUBLIC formats)
+target_link_libraries(game PUBLIC formats SDL2::SDL2)
 
 add_executable(shpview src/tools/shpview.cpp)
 target_link_libraries(shpview PRIVATE formats SDL2::SDL2 SDL2::SDL2main)
