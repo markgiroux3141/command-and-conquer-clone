@@ -1,0 +1,21 @@
+# Game assets — copyrighted, personal use only, never commit (see cnc-clone-asset-sources.md §1)
+data/
+
+# Reference repos are cloned separately, not vendored
+reference/
+
+# Build output
+build/
+
+# Third-party binaries in tools/ (our own scripts ARE committed)
+tools/7zip/
+tools/SDL2/
+tools/xcc/
+tools/XCC_Utilities.exe
+tools/7z-installer.exe
+tools/7zr.exe
+tools/sdl2.zip
+
+# Scratch
+*.bmp
+__pycache__/
