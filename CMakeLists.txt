@@ -11,11 +11,17 @@ find_package(SDL2 REQUIRED)
 add_library(formats STATIC
     src/formats/aud.cpp
     src/formats/ini.cpp
+    src/formats/lcw.cpp
     src/formats/palette.cpp
     src/formats/shp.cpp
     src/formats/tmp.cpp
 )
 target_include_directories(formats PUBLIC src)
+
+add_library(game STATIC
+    src/game/map.cpp
+)
+target_link_libraries(game PUBLIC formats)
 
 add_executable(shpview src/tools/shpview.cpp)
 target_link_libraries(shpview PRIVATE formats SDL2::SDL2 SDL2::SDL2main)
@@ -28,6 +34,9 @@ target_link_libraries(iniquery PRIVATE formats)
 
 add_executable(auddump src/tools/auddump.cpp)
 target_link_libraries(auddump PRIVATE formats)
+
+add_executable(mapview src/tools/mapview.cpp)
+target_link_libraries(mapview PRIVATE game SDL2::SDL2 SDL2::SDL2main)
 
 # SDL2.dll next to the executables
 add_custom_command(TARGET shpview POST_BUILD

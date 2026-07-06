@@ -30,11 +30,23 @@ are format 1 (all in covert_ops). rules.ini lives at
 
 ## Phase 2 — Map rendering
 
-- [ ] Map INI/MPR loader (RA maps: [Map] section, packed MapPack/OverlayPack base64+LCW)
-- [ ] Theater tile rendering (temperate first), full map draw
-- [ ] Overlay layer: ore/gems, walls, trees (terrain objects)
-- [ ] Scrolling camera + edge/keyboard scroll
-- [ ] Render a real skirmish map end-to-end
+- [x] Template ID→art table generated from RA source (`tools/gen_template_table.py`
+      → `src/game/template_table.h`, 401 templates incl. FIXIT_ANTS) (2026-07-06)
+- [x] Map INI loader (`src/game/map.cpp`: MapPack/OverlayPack base64 → chunked
+      LCW → cells; LCW extracted to `src/formats/lcw.{h,cpp}`) (2026-07-06)
+- [x] Theater tile rendering — all three theaters verified (snow scg01ea/scm01ea,
+      temperate scg05ea, interior scg10eb) (2026-07-06)
+- [x] Overlay layer: ore/gems (density frames per Tiberium_Adjust), walls
+      (adjacency frames per Wall_Update), trees/terrain objects (2026-07-06)
+- [x] Scrolling camera + edge/keyboard scroll (mapview windowed mode) (2026-07-06)
+- [x] Render a real skirmish map end-to-end (scm01ea 94×94) (2026-07-06)
+
+Gotchas learned: map template IDs 0 **and 255** mean clear (CELL.CPP
+Recalc_Attributes special-cases 255; OpenRA's tileset makes 255 the clear
+template) — without this, snow maps are full of "missing art". Clear cells use
+icon `(x&3)|((y&3)<<2)` (Clear_Icon). Template art missing from MIXes: b4/b5/b6,
+p15 (cut content), hill01 (ant missions only). SHP shadow index 4 is drawn as a
+50% darken in mapview for now; real shadow tables are Phase 3.
 
 ## Phase 3 — Units on screen
 
@@ -105,3 +117,9 @@ carries the delta. Update this file's checkboxes *before* writing a handoff.
   Context ~70% at end of session; next session starts Phase 2 (map rendering).
   Handoff written (`HANDOFF.md`), repo pushed to GitHub
   (markgiroux3141/command-and-conquer-clone).
+- **2026-07-06 (session 2):** Phase 2 complete. Template table generator,
+  LCW extracted to own module, map loader (game lib), mapview tool with
+  terrain/overlay/terrain-object layers + scrolling. Verified by rendering
+  missions in all three theaters and a 94×94 multiplayer map; renders match
+  expected RA look (shorelines/cliffs/bridges/ore all coherent). Next: Phase 3
+  (units on screen — sprite renderer with shadow tables + house-color remap).
