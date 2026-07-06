@@ -65,7 +65,10 @@ Gotchas learned: infantry art lives in `INSTALL/REDALERT/hires/` (not
 conquer). Civilians c3–c10 have no art — original uses C1's shapes with
 per-type remap tables (we fall back to c1). War factory is two-part art
 (weap.shp + weap2.shp roof). Shadow is still the 50% darken approximation,
-not the original fading tables.
+not the original fading tables. mouse.shp is **Dune II-format** SHP
+(per-frame sizes; decoder in `src/formats/shpd2.cpp`, verify with
+`mapview --dump-cursor out.bmp`) — sniff SHP variants by header, extensions
+lie.
 
 ## Phase 4 — Simulation core
 

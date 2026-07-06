@@ -15,6 +15,7 @@ add_library(formats STATIC
     src/formats/lcw.cpp
     src/formats/palette.cpp
     src/formats/shp.cpp
+    src/formats/shpd2.cpp
     src/formats/tmp.cpp
 )
 target_include_directories(formats PUBLIC src)

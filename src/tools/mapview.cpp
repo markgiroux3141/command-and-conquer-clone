@@ -24,6 +24,7 @@
 
 #include "formats/palette.h"
 #include "formats/shp.h"
+#include "formats/shpd2.h"
 #include "formats/tmp.h"
 #include "game/house.h"
 #include "game/map.h"
@@ -387,6 +388,26 @@ int main(int argc, char** argv) {
         std::stable_sort(objects.begin(), objects.end(),
                          [](const DrawObject& a, const DrawObject& b) { return a.y < b.y; });
 
+        // Debug: dump the first cursor frames to verify the D2 SHP decoder.
+        if (const char* cursorDump = strArg(argc, argv, "--dump-cursor")) {
+            auto cur = fmt::ShpD2File::load(root + "/INSTALL/REDALERT/hires/mouse.shp");
+            int n = std::min<int>(20, int(cur.frames.size()));
+            SDL_Surface* cs = SDL_CreateRGBSurfaceWithFormat(0, n * 48, 48, 32,
+                                                             SDL_PIXELFORMAT_ARGB8888);
+            game::Canvas cc = game::Canvas::wrap(cs);
+            game::fillRect(cc, 0, 0, cs->w, cs->h, 0xff604060);
+            game::BlitOptions copts;
+            copts.colorKey = true;
+            for (int i = 0; i < n; i++)
+                blitIndexed(cc, cur.frames[i].pixels.data(), cur.frames[i].width,
+                            cur.frames[i].height, i * 48, 0, pal, copts);
+            if (SDL_SaveBMP(cs, cursorDump) != 0)
+                throw std::runtime_error(SDL_GetError());
+            std::printf("wrote %s (%zu cursor frames total)\n", cursorDump,
+                        cur.frames.size());
+            return 0;
+        }
+
         // ---- Headless dump: bake objects into the map surface ----
         if (dumpPath) {
             if (flagArg(argc, argv, "--select")) // debug: show selection UI
@@ -419,7 +440,15 @@ int main(int argc, char** argv) {
         if (!win)
             throw std::runtime_error(SDL_GetError());
         SDL_ShowCursor(SDL_DISABLE);
-        const fmt::ShpFile* cursor = art.shp("mouse");
+        // mouse.shp is Dune II-format SHP with per-frame sizes; frame 0 is
+        // the standard arrow.
+        std::optional<fmt::ShpD2File> cursor;
+        try {
+            cursor = fmt::ShpD2File::load(root + "/INSTALL/REDALERT/hires/mouse.shp");
+        } catch (const std::exception& ex) {
+            std::printf("note: no cursor art (%s), using OS cursor\n", ex.what());
+            SDL_ShowCursor(SDL_ENABLE);
+        }
 
         float camX = 0, camY = 0;
         const float kSpeed = 480.0f;
@@ -501,10 +530,10 @@ int main(int argc, char** argv) {
                                0xffffffff);
 
             if (cursor && !cursor->frames.empty()) {
+                const auto& cf = cursor->frames[0];
                 game::BlitOptions copts;
                 copts.colorKey = true;
-                blitIndexed(wc, cursor->frames[0].data(), cursor->width, cursor->height,
-                            mx, my, pal, copts);
+                blitIndexed(wc, cf.pixels.data(), cf.width, cf.height, mx, my, pal, copts);
             }
 
             SDL_UpdateWindowSurface(win);
