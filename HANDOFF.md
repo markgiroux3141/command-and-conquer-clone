@@ -1,5 +1,8 @@
 # Handoff — session 2 → session 3 (2026-07-06)
 
+Session 2 completed Phases 2 AND 3 (map rendering + units on screen), plus a
+late fix: mouse.shp is Dune II-format SHP → new decoder src/formats/shpd2.cpp.
+
 ## Read first
 
 1. `MILESTONES.md` — Phase 0–3 done and verified; **Phase 4 (simulation core)
