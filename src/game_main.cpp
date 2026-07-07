@@ -127,8 +127,38 @@ struct DrawObject {
     bool selectable = false;
     int health = 256;
     bool selected = false;
-    int unitId = -1; // sim unit id, -1 for structures
+    int unitId = -1;   // sim unit id, -1 for structures
+    int structId = -1; // sim structure id, -1 for units
 };
+
+// A playing effect animation (explosion, impact) in world pixels (center).
+struct Anim {
+    const fmt::ShpFile* shp = nullptr;
+    int x = 0, y = 0;
+    int frame = 0;
+};
+
+// Combat_Anim (COMBAT.CPP): warhead ExplosionSet + damage -> effect art.
+std::string combatAnimName(int damage, const game::WarheadStats* wh, bool water) {
+    static const char* kAp[] = {"veh-hit3", "veh-hit2", "frag1", "fball1"};
+    static const char* kHe[] = {"veh-hit1", "veh-hit2", "art-exp1", "fball1"};
+    static const char* kFire[] = {"napalm1", "napalm2", "napalm3"};
+    static const char* kWater[] = {"h2o_exp3", "h2o_exp2", "h2o_exp1"};
+    if (damage <= 0 || !wh)
+        return "";
+    auto pick = [&](const char* const* list, int n, int cap) {
+        return list[(n - 1) * std::min(damage, cap) / cap];
+    };
+    switch (wh->explosion) {
+    case 1: return "piff";
+    case 2: return damage > 15 ? "piffpiff" : "piff";
+    case 3: return water ? pick(kWater, 3, 150) : pick(kFire, 3, 150);
+    case 4: return water ? pick(kWater, 3, 90) : pick(kAp, 4, 90);
+    case 5: return water ? pick(kWater, 3, 130) : pick(kHe, 4, 130);
+    case 6: return "atomsfx";
+    default: return "";
+    }
+}
 
 // Vehicles whose SHP packs 32 turret frames after the 32 hull facings.
 bool hasTurret(const std::string& type) {
@@ -183,7 +213,8 @@ int main(int argc, char** argv) {
     if (argc < 3) {
         std::fprintf(stderr,
                      "usage: game <map.ini> <data-root> [--scale N] [--house H] [--no-shroud]\n"
-                     "            [--sim-ticks N] [--move i,cx,cy]... [--dump out.bmp]\n"
+                     "            [--sim-ticks N] [--move i,cx,cy]... [--attack i,j]...\n"
+                     "            [--attack-struct i,sid]... [--dump out.bmp]\n"
                      "  data-root example: data/assets/red_alert/allied\n");
         return 2;
     }
@@ -228,36 +259,38 @@ int main(int argc, char** argv) {
         if (!flagArg(argc, argv, "--no-shroud"))
             sim.setPlayerHouse(playerHouse);
 
-        for (int cy = 0; cy < ch; cy++) {
-            for (int cx = 0; cx < cw; cx++) {
-                int mapX = cx0 + cx, mapY = cy0 + cy;
-                const auto& cell = map.cells[mapY * kSize + mapX];
-                int dx = cx * kTile, dy = cy * kTile;
+        // Bakes one cell's base terrain into the world surface (also used to
+        // redraw a cell after its ore is harvested away).
+        auto bakeTerrainCell = [&](int mapX, int mapY) {
+            const auto& cell = map.cells[mapY * kSize + mapX];
+            int dx = (mapX - cx0) * kTile, dy = (mapY - cy0) * kTile;
 
-                const fmt::TmpFile* t = nullptr;
-                int icon = 0;
-                if (cell.templateId != 0xffff && cell.templateId < game::kTemplateCount) {
-                    t = art.tmp(game::kTemplateTable[cell.templateId].name);
-                    icon = cell.icon;
-                    if (!t) {
-                        game::fillRect(mc, dx, dy, kTile, kTile, 0xffff00ff);
-                        continue;
-                    }
-                }
-                if (t && (icon >= int(t->tiles.size()) || t->tiles[icon].empty()))
-                    t = nullptr;
+            const fmt::TmpFile* t = nullptr;
+            int icon = 0;
+            if (cell.templateId != 0xffff && cell.templateId < game::kTemplateCount) {
+                t = art.tmp(game::kTemplateTable[cell.templateId].name);
+                icon = cell.icon;
                 if (!t) {
-                    t = clear;
-                    icon = (mapX & 3) | ((mapY & 3) << 2); // Clear_Icon()
+                    game::fillRect(mc, dx, dy, kTile, kTile, 0xffff00ff);
+                    return;
                 }
-                blitIndexed(mc, t->tiles[icon].data(), t->tileWidth, t->tileHeight, dx, dy,
-                            pal);
-                // Land type from the template's control map (Land_Type()).
-                if (t != clear && icon < int(t->landBytes.size()))
-                    sim.setLand(mapY * kSize + mapX,
-                                game::landFromControl(t->landBytes[icon]));
             }
-        }
+            if (t && (icon >= int(t->tiles.size()) || t->tiles[icon].empty()))
+                t = nullptr;
+            if (!t) {
+                t = clear;
+                icon = (mapX & 3) | ((mapY & 3) << 2); // Clear_Icon()
+            }
+            blitIndexed(mc, t->tiles[icon].data(), t->tileWidth, t->tileHeight, dx, dy,
+                        pal);
+            // Land type from the template's control map (Land_Type()).
+            if (t != clear && icon < int(t->landBytes.size()))
+                sim.setLand(mapY * kSize + mapX,
+                            game::landFromControl(t->landBytes[icon]));
+        };
+        for (int cy = 0; cy < ch; cy++)
+            for (int cx = 0; cx < cw; cx++)
+                bakeTerrainCell(cx0 + cx, cy0 + cy);
 
         // ---- Overlay layer (+ land effects: ore, walls) ----
         auto overlayAt = [&](int mx, int my) -> int {
@@ -293,6 +326,8 @@ int main(int argc, char** argv) {
                             if ((dx2 || dy2) && isResource(overlayAt(mapX + dx2, mapY + dy2)))
                                 count++;
                     frame = o <= 8 ? kAdjGold[count] : kAdjGem[count];
+                    // Displayed density doubles as the harvestable bail count.
+                    sim.setOre(mapY * kSize + mapX, frame + 1, o >= 9);
                 } else if (isWall(o)) {
                     if (overlayAt(mapX, mapY - 1) == o)
                         frame |= 1;
@@ -331,7 +366,7 @@ int main(int argc, char** argv) {
                         sim.setBlocked((ocy + by) * kSize + ocx + bx);
         }
 
-        // ---- Structures: static drawables + blocked footprints ----
+        // ---- Structures: sim entities (attackable) + static drawables ----
         std::vector<DrawObject> structures;
         for (const auto& s : map.structures) {
             const fmt::ShpFile* shp = art.shp(s.type);
@@ -339,6 +374,17 @@ int main(int argc, char** argv) {
                 std::printf("note: missing structure art: %s\n", s.type.c_str());
                 continue;
             }
+            game::Sim::Structure st;
+            st.type = s.type;
+            st.house = s.house;
+            st.cell = s.cell;
+            // Footprint = SHP cell bounds (approximation, see MILESTONES).
+            st.w = (shp->width + kTile - 1) / kTile;
+            st.h = (shp->height + kTile - 1) / kTile;
+            st.stats = rules.unit(s.type, game::UnitKind::Structure);
+            st.hp = std::max(1, st.stats.strength * s.health / 256);
+            int sid = sim.addStructure(std::move(st));
+
             DrawObject o;
             o.shp = shp;
             int scx = s.cell % kSize, scy = s.cell / kSize;
@@ -346,20 +392,14 @@ int main(int argc, char** argv) {
             o.y = (scy - cy0) * kTile;
             o.remap = &remaps[size_t(game::houseColor(s.house))];
             o.selectable = true;
-            o.health = s.health;
+            o.structId = sid;
             structures.push_back(o);
             if (const fmt::ShpFile* top = art.shp(s.type + "2")) {
                 DrawObject o2 = o;
                 o2.shp = top;
                 o2.selectable = false;
                 structures.push_back(o2);
-            }
-            for (int by = 0; by < (shp->height + kTile - 1) / kTile; by++)
-                for (int bx = 0; bx < (shp->width + kTile - 1) / kTile; bx++)
-                    if (scx + bx < kSize && scy + by < kSize)
-                        sim.setBlocked((scy + by) * kSize + scx + bx);
-            if (s.house == playerHouse)
-                sim.reveal(s.cell, rules.unit(s.type, game::UnitKind::Vehicle).sight);
+            } // addStructure blocked the footprint and revealed shroud
         }
 
         // ---- Sim units from the scenario ----
@@ -368,9 +408,11 @@ int main(int argc, char** argv) {
             su.type = u.type;
             su.house = u.house;
             su.facing = u.facing;
-            su.health = u.health;
+            su.turreted = hasTurret(u.type);
+            su.harvester = u.type == "harv";
             su.stats = rules.unit(u.type, isShipType(u.type) ? game::UnitKind::Ship
                                                              : game::UnitKind::Vehicle);
+            su.hp = std::max(1, su.stats.strength * u.health / 256);
             sim.addUnit(std::move(su), u.cell);
         }
         for (const auto& inf : map.infantry) {
@@ -380,8 +422,8 @@ int main(int argc, char** argv) {
             su.infantry = true;
             su.subcell = inf.subcell;
             su.facing = inf.facing;
-            su.health = inf.health;
             su.stats = rules.unit(inf.type, game::UnitKind::Infantry);
+            su.hp = std::max(1, su.stats.strength * inf.health / 256);
             sim.addUnit(std::move(su), inf.cell);
         }
 
@@ -399,14 +441,14 @@ int main(int argc, char** argv) {
                 o.frame = (8 - ((u.facing & 0xff) >> 5)) & 7;
             } else {
                 o.frame = game::facingToFrame(u.facing) % int(shp->frames.size());
-                if (hasTurret(u.type) && shp->frames.size() >= 64)
-                    o.turretFrame = 32 + game::facingToFrame(u.facing);
+                if (u.turreted && shp->frames.size() >= 64)
+                    o.turretFrame = 32 + game::facingToFrame(u.turretFacing);
             }
             o.x = u.x * kTile / game::Sim::kLepton - cx0 * kTile - shp->width / 2;
             o.y = u.y * kTile / game::Sim::kLepton - cy0 * kTile - shp->height / 2;
             o.remap = &remaps[size_t(game::houseColor(u.house))];
             o.selectable = true;
-            o.health = u.health;
+            o.health = u.healthFrac();
             o.selected = u.selected;
             o.unitId = u.id;
             return o;
@@ -423,9 +465,14 @@ int main(int argc, char** argv) {
 
         auto buildDrawList = [&]() {
             std::vector<DrawObject> objects;
-            for (const auto& s : structures)
-                if (objectVisible(s))
-                    objects.push_back(s);
+            for (auto s : structures) {
+                const auto* live = sim.findStructure(s.structId);
+                if (!live || !objectVisible(s))
+                    continue;
+                s.health = std::clamp(live->hp * 256 / std::max(1, live->stats.strength),
+                                      0, 256);
+                objects.push_back(s);
+            }
             for (const auto& u : sim.units())
                 if (auto o = unitDrawObject(u))
                     if (objectVisible(*o))
@@ -435,6 +482,70 @@ int main(int argc, char** argv) {
                                  return a.y < b.y;
                              });
             return objects;
+        };
+
+        // ---- Effects: projectiles in flight + explosion/impact anims ----
+        std::vector<Anim> anims;
+        // Turn last tick's sim events into effect anims; call once per tick.
+        auto processEvents = [&]() {
+            for (auto& a : anims)
+                a.frame++;
+            anims.erase(std::remove_if(anims.begin(), anims.end(),
+                                       [](const Anim& a) {
+                                           return a.frame >= int(a.shp->frames.size());
+                                       }),
+                        anims.end());
+            for (const auto& ev : sim.events()) {
+                std::string name;
+                if (ev.type == game::Sim::Event::OreDepleted) {
+                    bakeTerrainCell(ev.cell % kSize, ev.cell / kSize);
+                    continue;
+                }
+                if (ev.type == game::Sim::Event::Impact) {
+                    int c = (ev.y / game::Sim::kLepton) * kSize + ev.x / game::Sim::kLepton;
+                    bool water = sim.landAt(c) == game::Land::Water ||
+                                 sim.landAt(c) == game::Land::River;
+                    name = combatAnimName(ev.damage, ev.warhead, water);
+                } else if (ev.type == game::Sim::Event::UnitDied) {
+                    // Approximation: vehicles fireball; infantry just vanish
+                    // (real per-type InfDeath sequences are still todo).
+                    name = ev.infantry ? "" : "fball1";
+                } else { // StructDied
+                    name = "fball1";
+                }
+                if (name.empty())
+                    continue;
+                const fmt::ShpFile* shp = art.shp(name);
+                if (!shp || shp->frames.empty())
+                    continue;
+                anims.push_back({shp, ev.x * kTile / game::Sim::kLepton - cx0 * kTile,
+                                 ev.y * kTile / game::Sim::kLepton - cy0 * kTile, 0});
+            }
+        };
+        auto drawEffects = [&](game::Canvas& c, int offX, int offY) {
+            game::BlitOptions opts;
+            opts.colorKey = true;
+            opts.shadow = true;
+            for (const auto& p : sim.projectiles()) {
+                if (p.weapon->projectileImage.empty())
+                    continue;
+                const fmt::ShpFile* shp = art.shp(p.weapon->projectileImage);
+                if (!shp || shp->frames.empty())
+                    continue;
+                int frame = shp->frames.size() >= 32
+                                ? game::facingToFrame(p.facing) % int(shp->frames.size())
+                                : 0;
+                blitIndexed(c, shp->frames[frame].data(), shp->width, shp->height,
+                            p.x * kTile / game::Sim::kLepton - cx0 * kTile -
+                                shp->width / 2 - offX,
+                            p.y * kTile / game::Sim::kLepton - cy0 * kTile -
+                                shp->height / 2 - offY,
+                            pal, opts);
+            }
+            for (const auto& a : anims)
+                blitIndexed(c, a.shp->frames[a.frame].data(), a.shp->width,
+                            a.shp->height, a.x - a.shp->width / 2 - offX,
+                            a.y - a.shp->height / 2 - offY, pal, opts);
         };
 
         // Black out unexplored cells of the visible window (world-pixel view
@@ -454,31 +565,88 @@ int main(int argc, char** argv) {
         if (simTicks >= 0) {
             auto printUnits = [&](const char* tag) {
                 for (const auto& u : sim.units())
-                    std::printf("%s unit %d %-5s %-8s cell %d,%d facing %d%s\n", tag,
-                                u.id, u.type.c_str(), u.house.c_str(),
+                    std::printf("%s unit %d %-5s %-8s cell %d,%d facing %d hp %d/%d%s%s\n",
+                                tag, u.id, u.type.c_str(), u.house.c_str(),
                                 u.x / game::Sim::kLepton, u.y / game::Sim::kLepton,
-                                u.facing, u.moving() ? " (moving)" : "");
+                                u.facing, u.hp, u.stats.strength,
+                                u.moving() ? " (moving)" : "",
+                                u.hasTarget() ? " (attacking)" : "");
+                for (const auto& s : sim.structures())
+                    std::printf("%s struct %d %-5s %-8s cell %d,%d hp %d/%d\n", tag,
+                                s.id, s.type.c_str(), s.house.c_str(), s.cell % kSize,
+                                s.cell / kSize, s.hp, s.stats.strength);
             };
             printUnits("before:");
             std::vector<std::pair<int, int>> orders; // unit id -> dest cell
             for (int i = 3; i < argc - 1; i++) {
-                if (std::strcmp(argv[i], "--move") != 0)
-                    continue;
-                int idx = -1, mx = -1, my = -1;
-                if (std::sscanf(argv[i + 1], "%d,%d,%d", &idx, &mx, &my) == 3 &&
-                    idx >= 0 && idx < int(sim.units().size()))
-                    orders.emplace_back(sim.units()[idx].id, my * kSize + mx);
-                else
-                    std::fprintf(stderr, "bad --move '%s' (want i,cx,cy)\n", argv[i + 1]);
+                int a = -1, b = -1, c = -1;
+                if (std::strcmp(argv[i], "--move") == 0) {
+                    if (std::sscanf(argv[i + 1], "%d,%d,%d", &a, &b, &c) == 3 &&
+                        a >= 0 && a < int(sim.units().size()))
+                        orders.emplace_back(sim.units()[a].id, c * kSize + b);
+                    else
+                        std::fprintf(stderr, "bad --move '%s' (want i,cx,cy)\n",
+                                     argv[i + 1]);
+                } else if (std::strcmp(argv[i], "--attack") == 0) {
+                    if (std::sscanf(argv[i + 1], "%d,%d", &a, &b) == 2 && a >= 0 &&
+                        a < int(sim.units().size()) && b >= 0 &&
+                        b < int(sim.units().size()))
+                        sim.orderAttack({sim.units()[a].id}, sim.units()[b].id, -1);
+                    else
+                        std::fprintf(stderr, "bad --attack '%s' (want i,j)\n",
+                                     argv[i + 1]);
+                } else if (std::strcmp(argv[i], "--attack-struct") == 0) {
+                    if (std::sscanf(argv[i + 1], "%d,%d", &a, &b) == 2 && a >= 0 &&
+                        a < int(sim.units().size()) && sim.findStructure(b))
+                        sim.orderAttack({sim.units()[a].id}, -1, b);
+                    else
+                        std::fprintf(stderr, "bad --attack-struct '%s' (want i,structId)\n",
+                                     argv[i + 1]);
+                } else if (std::strcmp(argv[i], "--harvest") == 0) {
+                    if (std::sscanf(argv[i + 1], "%d,%d,%d", &a, &b, &c) == 3 &&
+                        a >= 0 && a < int(sim.units().size()))
+                        sim.orderHarvest({sim.units()[a].id}, c * kSize + b);
+                    else
+                        std::fprintf(stderr, "bad --harvest '%s' (want i,cx,cy)\n",
+                                     argv[i + 1]);
+                }
             }
             for (auto [id, dest] : orders)
                 sim.orderMove({id}, dest);
-            for (int t = 0; t < simTicks; t++)
+            for (int t = 0; t < simTicks; t++) {
                 sim.tick();
+                for (const auto& ev : sim.events()) {
+                    if (ev.type == game::Sim::Event::UnitDied ||
+                        ev.type == game::Sim::Event::StructDied)
+                        std::printf("tick %d: %s died at %d,%d\n", t,
+                                    ev.type == game::Sim::Event::UnitDied
+                                        ? (ev.infantry ? "infantry" : "unit")
+                                        : "structure",
+                                    ev.x / game::Sim::kLepton,
+                                    ev.y / game::Sim::kLepton);
+                    else if (ev.type == game::Sim::Event::OreDepleted)
+                        std::printf("tick %d: ore depleted at %d,%d\n", t,
+                                    ev.cell % kSize, ev.cell / kSize);
+                }
+                processEvents();
+            }
             printUnits("after: ");
+            std::set<std::string> houses;
+            for (const auto& s : sim.structures())
+                houses.insert(s.house);
+            for (const auto& u : sim.units())
+                houses.insert(u.house);
+            for (const auto& h : houses) {
+                int produced = 0, drained = 0;
+                sim.power(h, produced, drained);
+                if (sim.credits(h) || produced || drained)
+                    std::printf("house %-8s credits %d power %d/%d\n", h.c_str(),
+                                sim.credits(h), produced, drained);
+            }
             if (dumpPath) {
                 for (const auto& o : buildDrawList())
                     drawObject(mc, o, pal, 0, 0);
+                drawEffects(mc, 0, 0);
                 drawShroud(mc, 0, 0);
                 SDL_Surface* outSurf = mapSurf;
                 if (scale > 1) {
@@ -583,10 +751,58 @@ int main(int argc, char** argv) {
                         for (const auto& u : sim.units())
                             if (u.selected)
                                 ids.push_back(u.id);
-                        if (!ids.empty())
-                            sim.orderMove(ids, cellY * kSize + cellX);
+                        // Right-click on an enemy = attack, otherwise move.
+                        int tu = -1, ts = -1;
+                        for (auto it = objects.rbegin(); it != objects.rend(); ++it) {
+                            if (wx < it->x || wx >= it->x + it->shp->width ||
+                                wy < it->y || wy >= it->y + it->shp->height)
+                                continue;
+                            if (it->unitId >= 0) {
+                                const auto* u = sim.findUnit(it->unitId);
+                                if (u && u->house != playerHouse) {
+                                    tu = u->id;
+                                    break;
+                                }
+                            } else if (it->structId >= 0 && it->selectable) {
+                                const auto* s = sim.findStructure(it->structId);
+                                if (s && s->house != playerHouse) {
+                                    ts = s->id;
+                                    break;
+                                }
+                            }
+                        }
+                        int cell = cellY * kSize + cellX;
+                        if (ids.empty())
+                            ; // nothing selected
+                        else if (tu >= 0 || ts >= 0)
+                            sim.orderAttack(ids, tu, ts);
+                        else if (sim.oreAt(cell) > 0) {
+                            // Harvesters gather; anyone else just drives there.
+                            std::vector<int> harv, rest;
+                            for (int id : ids)
+                                (sim.findUnit(id)->harvester ? harv : rest)
+                                    .push_back(id);
+                            if (!harv.empty())
+                                sim.orderHarvest(harv, cell);
+                            if (!rest.empty())
+                                sim.orderMove(rest, cell);
+                        } else
+                            sim.orderMove(ids, cell);
                     }
                 }
+            }
+
+            // No in-game font yet: surface credits/power in the title bar.
+            static uint32_t lastTitle = 0;
+            if (SDL_GetTicks() - lastTitle > 500) {
+                lastTitle = SDL_GetTicks();
+                int produced = 0, drained = 0;
+                sim.power(playerHouse, produced, drained);
+                char title[128];
+                std::snprintf(title, sizeof(title),
+                              "game — %s  credits: %d  power: %d/%d", playerHouse.c_str(),
+                              sim.credits(playerHouse), produced, drained);
+                SDL_SetWindowTitle(win, title);
             }
 
             uint32_t now = SDL_GetTicks();
@@ -597,6 +813,7 @@ int main(int argc, char** argv) {
                 tickAcc = kTickMs; // don't spiral after a stall
             while (tickAcc >= kTickMs) {
                 sim.tick();
+                processEvents();
                 tickAcc -= kTickMs;
             }
 
@@ -621,6 +838,7 @@ int main(int argc, char** argv) {
             objects = buildDrawList(); // positions may have ticked above
             for (const auto& o : objects)
                 drawObject(wc, o, pal, int(camX), int(camY));
+            drawEffects(wc, int(camX), int(camY));
             drawShroud(wc, int(camX), int(camY));
 
             if (dragging && (mstate & SDL_BUTTON_LMASK))

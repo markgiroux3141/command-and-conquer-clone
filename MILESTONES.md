@@ -96,10 +96,35 @@ occupy cells (no infantry-vs-infantry collision), shadow still 50% darken.
 
 ## Phase 5 — Combat & economy
 
-- [ ] Weapons, projectiles, warheads, damage vs armor from rules.ini
-- [ ] Death animations, explosion effects
-- [ ] Harvester loop: ore → refinery → credits
-- [ ] Power model (production speed penalty)
+- [x] Weapons, projectiles, warheads, damage vs armor from rules.ini
+      (`rules.{h,cpp}`: [weapon]/[warhead] sections, Verses vs Armor=,
+      Modify_Damage port; sim: attack orders, chase into range, turret
+      tracking, ROF cooldown, homing projectiles) (2026-07-07)
+- [x] Death animations, explosion effects (sim emits Impact/UnitDied/
+      StructDied events; shell maps them via Combat_Anim table to piff/
+      veh-hit/art-exp/napalm/h2o_exp/fball1 SHPs; vehicle death = fball1.
+      Infantry death sequences (InfDeath) still todo — they just vanish)
+      (2026-07-07)
+- [x] Harvester loop: ore → refinery → credits (ore bails = density frame+1,
+      15 ticks/bail, BailCount cap, auto-shuttle to nearest friendly proc,
+      GoldValue/GemValue credits per house; depleted cells rebaked to bare
+      terrain; right-click ore = harvest, credits shown in title bar)
+      (2026-07-07)
+- [x] Power model (produced/drained per house from Power=, `Sim::power` +
+      `powerFraction` = Power_Fraction port; the production-speed consumer
+      lands with Phase 6 production) (2026-07-07)
+
+Gotchas learned: Verses= order is none,wood,light,heavy,concrete (atoi stops
+at '%'). Weapon Range= is fixed-point cells ("4.75" → 1216 leptons); weapon/
+projectile Speed= scales *256/100 capped at 255 like unit speed; ROF= is
+already in ticks. Modify_Damage falloff divisor is Spread*5 leptons (or 2 if
+no spread; PIXEL_LEPTON_W==10) — direct hits pass distance 0. Explosion art
+comes from the warhead ExplosionSet + damage via COMBAT.CPP Combat_Anim
+(water cells swap in h2o_exp*). Structures are sim entities now (attackable,
+footprint still SHP cell bounds). Not yet done: auto-acquire (units only
+fire when ordered), defensive structures firing back, splash damage to
+nearby objects, Burst=/secondary weapons, muzzle-flash Anim=, infantry
+InfDeath sequences, ore re-adjacency on neighbor depletion (frames stay).
 
 ## Phase 6 — Production
 
@@ -185,3 +210,14 @@ carries the delta. Update this file's checkboxes *before* writing a handoff.
   2026-07-07): sight circles at start, corridor revealed along a jeep's
   route, hidden Soviet base until scouted — **Phase 4 complete.** Next:
   Phase 5 (combat & economy) or Phase 9 (map editor).
+- **2026-07-07 (session 4): Phase 5 complete.** Weapons/warheads/armor from
+  rules.ini, attack orders (chase, turret tracking, ROF, homing projectiles,
+  Modify_Damage port), sim events → explosion/death anims, attackable sim
+  structures, harvester loop with per-house credits and ore depletion
+  (rebaked cells), power model + powerFraction. Verified headlessly on
+  scg01ea (`--attack`, `--attack-struct`, `--harvest`): jeep kills e1 in 4
+  shots, tesla takes exactly 3/shot (Verses 25% vs heavy), grenadier kills
+  jeep → fball1 renders, harvester round trip = 700 credits (28×25),
+  determinism confirmed (identical run hashes). Movement regressions pass
+  (55,75 exact; water order settles 48,77). Next: Phase 6 (production) or
+  Phase 9 (map editor); infantry death anims + auto-acquire are known gaps.

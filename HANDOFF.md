@@ -1,85 +1,89 @@
-# Handoff — session 3 → session 4 (written 2026-07-06/07)
+# Handoff — session 4 → session 5 (written 2026-07-07)
 
-Session 3 completed **all of Phase 4**: `game.exe` (fixed 15/s tick loop),
-rules.ini stat loading, land-type passability from TMP control maps, A*
-pathfinding with cell-occupancy collision, and shroud.
+Session 4 completed **all of Phase 5**: weapons/warheads/damage from
+rules.ini, attack orders with turret tracking and homing projectiles,
+explosion/death anims via a sim event stream, attackable sim structures,
+the harvester→refinery→credits loop, and the power model.
 
 ## Read first
 
 1. `MILESTONES.md` — checkboxes + per-phase gotchas are current.
-2. `README.md` — build commands, `game.exe` usage (incl. headless sim flags).
-3. Only then source: `src/game/sim.{h,cpp}` + `src/game/rules.{h,cpp}` are the
-   sim core; `src/game_main.cpp` is the shell. Don't re-read `src/formats/`
-   or the render/map/house code (all verified).
+2. `README.md` — build commands, `game.exe` usage.
+3. Only then source: `src/game/sim.{h,cpp}` (movement + combat + harvest),
+   `src/game/rules.{h,cpp}` (stats/weapons/warheads/economy), and
+   `src/game_main.cpp` (shell: draw lists, events→anims, orders). The
+   formats/render/map/house code is all verified — don't re-read.
 
 ## Current state
 
-- Everything compiles clean: `cmake --build build --config Release` (MSVC).
-- `game.exe <map.ini> <data-root>` plays a scenario: select units, right-click
-  move orders, units path around water/cliffs/structures, pivot at ROT, spread
-  onto adjacent cells instead of stacking; shroud reveals with unit Sight as
-  they move (`--house`, `--no-shroud`). Sim is deterministic, in leptons
-  (256/cell), advanced only by `Sim::tick()` at 15/s.
-- `mapview` unchanged (pure viewer). game_main.cpp duplicates mapview's
-  ArtCache/terrain-bake code — consolidate into the game lib next time either
-  copy needs changing.
-- Verified headlessly (see recipe) + interactive smoke test only. Nobody has
-  played it with eyes-on yet — worth doing once before building more on top.
+- Compiles clean: `cmake --build build --config Release` (MSVC).
+- Combat: right-click an enemy unit/structure → selected units chase into
+  Range, aim (turret decoupled from hull on 1tnk/2tnk/3tnk/4tnk/jeep), fire
+  on ROF, damage = Damage × Verses[Armor] (COMBAT.CPP Modify_Damage port,
+  MinDamage/MaxDamage clamps). Deaths free occupancy, fire events; the
+  shell plays Combat_Anim-selected SHPs (piff/veh-hit/art-exp/napalm/
+  h2o_exp) and fball1 for vehicle/structure deaths.
+- Economy: right-click ore with a harvester → gathers 1 bail/15 ticks up to
+  BailCount (28), auto-shuttles to nearest friendly `proc`, unloads after 30
+  ticks → credits[house] += bails×GoldValue (gems ×GemValue). Depleted cells
+  rebake to bare terrain. Credits + power in the window title (no FNT font
+  renderer yet).
+- Power: `Sim::power(house)` sums structure Power= (+/-);
+  `Sim::powerFraction` is the Power_Fraction port for Phase 6 production.
+- Sim stays deterministic (verified: identical stdout hashes on repeated
+  1400-tick combat+harvest runs). All verification headless; interactive
+  play still only smoke-tested — worth a real playthrough.
 
-## Next task: Phase 5 (combat & economy) — or Phase 9 (map editor)
+## Next task: Phase 6 (production) or Phase 9 (map editor)
 
-Phase 5 suggested order:
-1. Weapons/projectiles/warheads from rules.ini ([M60mg], [105mm]... Damage/
-   ROF/Range/Speed; warhead Verses= vs armor classes). Reference: RULES.CPP,
-   COMBAT.CPP Modify_Damage.
-2. Attack orders: right-click enemy → chase into Range, turret tracks target,
-   fire on ROF cooldown, apply damage; health bars already render.
-3. Death: unit removal + explosion anim SHPs (fire/explosion art in conquer,
-   e.g. veh-hit1, fball1); an Anim layer in the sim.
-4. Harvester loop + credits, then power. Sidebar/production is Phase 6.
+Phase 6 suggested order: sidebar cameo strip (SHP cameos exist in conquer,
+e.g. 1tnkicon.shp) → build queue with cost/time (BuildSpeed, scaled by
+powerFraction) → prerequisites (Prerequisite= in rules.ini) → structure
+placement (adjacency + passability) + MCV deploy. Spending hits the credits
+map that harvesting already fills.
 
 ## Gotchas not in MILESTONES.md
 
-- `game` CMake target name was taken by the engine lib → the exe target is
-  `game_exe` with OUTPUT_NAME `game`.
-- Sim facing is DirType (0=N, 64=E, clockwise, 0-255); `directionTo(dx,dy)`
-  handles the +y-is-south flip. Draw-frame mapping stays `game::facingToFrame`
-  (vehicles) / `(8-(facing>>5))&7` (infantry standing).
-- Non-infantry occupancy: a moving unit owns `occCell` **and** reserves
-  `path.front()` before entering (`occupant_` grid). If you add
-  teleport/death, free both cells or units will path around ghosts.
-- orderMove spirals per call; two separate orderMove calls can pick the same
-  destination (occupancy isn't claimed until arrival) — the loser re-paths and
-  parks adjacent, which looks fine, but a shared claim map would be cleaner.
-- Infantry walk animations don't exist yet — they slide in their standing
-  frame (walk cycles are the frames after the 8 standing ones). They also
-  don't occupy cells (no infantry collision).
-- Shroud reveal only triggers while a unit `moving()` (plus spawn/structure
-  load) — a future Chrono teleport or reinforcement drop must call
-  `Sim::reveal` itself. Unexplored = flat black; the original's soft shroud
-  edges (shadow.shp) are still todo, as are the real fading tables (shadow
-  index 4 is a 50% darken).
-- rules.ini land percents parse via std::stoi("90%") → 90; Winged hardcoded
-  100% everywhere.
+- Sim units die by erase-remove at end of `Sim::tick()`; anything holding a
+  `Unit*`/`Structure*` across a tick must re-look-up by id (`findUnit`).
+  Projectiles already handle their target dying mid-flight (they fly to the
+  last known spot and detonate on the ground).
+- `orderAttack` targets are (unitId, structId) with the unused one -1.
+  Headless flags: `--attack i,j` `--attack-struct i,structId`
+  `--harvest i,cx,cy` (unit *indices* into the initial list, struct *ids*).
+- Chase repaths when the target strays >2 cells from the stored destCell;
+  if A* returns empty the unit drops the target (prevents repath-spin on
+  unreachable targets).
+- In-range vehicles finish entering a reserved cell before stopping to
+  fire (occupancy stays consistent); infantry stop instantly.
+- The e2 grenade rules section is [Grenade] with Image=BOMB — projectile
+  art draws by facing only if the SHP has ≥32 frames, else frame 0.
+- Harvester "dock" = any cell adjacent to the proc footprint (real RA uses
+  a fixed dock cell + docking animation — revisit in polish).
+- bakeTerrainCell rebakes terrain only: a depleted ore cell under a tree
+  shadow would lose the shadow pixels (rare; ignore until it shows).
+- Water-destination regression (`--move 0,50,79` → 48,77) needs ~1200
+  ticks, not 600 — the handoff recipe under-ran it this session and it
+  looked like a regression for a while.
 
 ## Verification recipe
 
-Headless (used this session):
-
 ```
 build\Release\game.exe data\assets\red_alert\allied\MAIN\general\scg01ea.ini ^
-    data\assets\red_alert\allied --sim-ticks 600 --move 0,55,75 --dump out.bmp
+    data\assets\red_alert\allied --sim-ticks 1400 --no-shroud ^
+    --attack 0,13 --harvest 1,76,48
 ```
 
-- unit 0 (Greece jeep at 63,50) must end at exactly `cell 55,75`, having
-  crossed the cliff pass; convert BMP → PNG (PIL) and Read it to eyeball.
-- `--move 0,50,79` (water) → settles at nearest land (48,77), sim goes idle.
-- Three `--move i,55,75` orders → adjacent cells, never stacked.
-- Shroud: `--sim-ticks 0 --dump` shows only sight circles around the Greece
-  start force; after the 55,75 trip the jeep's route is a revealed corridor
-  through the (previously hidden) Soviet base. `--no-shroud` shows all.
-- Interactive: select jeeps on scg01ea, right-click across the map — smooth
-  pivot + path around water at ~1.5 cells/s, shroud lifting as they go.
+- unit 13 (e1 at 62,55) dies ~tick 85 (4 × 15 dmg from jeep M60mg).
+- "ore depleted" lines appear (~ticks 440-750), then
+  `house USSR credits 700 power 700/690` (28 bails × GoldValue 25).
+- `--attack-struct 3,0` → tesla hp falls 400→334 over 600 ticks (3/shot =
+  15 × 25% SA-vs-heavy).
+- Repeat a run → identical stdout (determinism).
+- Visual: `--dump out.bmp` right after a death tick shows fball1; the
+  harvested field shows bare snow where ore was.
+- Interactive: select jeeps, right-click Soviet infantry → chase/kill;
+  right-click ore with the harvester; watch title-bar credits climb.
 
 ## Context handoff protocol
 

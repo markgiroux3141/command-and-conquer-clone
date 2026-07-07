@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cmath>
 #include <queue>
+#include <utility>
 
 namespace game {
 
@@ -37,6 +38,9 @@ int Sim::addUnit(Unit u, int cell) {
     u.id = nextId_++;
     u.x = cellCenter(cell % kSize);
     u.y = cellCenter(cell / kSize);
+    if (u.hp < 0)
+        u.hp = u.stats.strength;
+    u.turretFacing = u.facing;
     if (u.infantry) {
         // Offset to the sub-cell spot so sim position matches the draw spot.
         static const int kSubX[5] = {0, -6, 6, -6, 6};
@@ -52,6 +56,57 @@ int Sim::addUnit(Unit u, int cell) {
         reveal(cell, u.stats.sight);
     units_.push_back(std::move(u));
     return units_.back().id;
+}
+
+int Sim::addStructure(Structure s) {
+    s.id = nextStructId_++;
+    if (s.hp <= 0)
+        s.hp = s.stats.strength;
+    int scx = s.cell % kSize, scy = s.cell / kSize;
+    for (int by = 0; by < s.h; by++)
+        for (int bx = 0; bx < s.w; bx++)
+            if (scx + bx < kSize && scy + by < kSize)
+                blocked_[(scy + by) * kSize + scx + bx] = 1;
+    if (!playerHouse_.empty() && s.house == playerHouse_)
+        reveal(s.cell, s.stats.sight);
+    structures_.push_back(std::move(s));
+    return structures_.back().id;
+}
+
+const Sim::Unit* Sim::findUnit(int id) const {
+    for (const auto& u : units_)
+        if (u.id == id)
+            return &u;
+    return nullptr;
+}
+
+const Sim::Structure* Sim::findStructure(int id) const {
+    for (const auto& s : structures_)
+        if (s.id == id)
+            return &s;
+    return nullptr;
+}
+
+Sim::Unit* Sim::mutableUnit(int id) {
+    return const_cast<Unit*>(std::as_const(*this).findUnit(id));
+}
+
+Sim::Structure* Sim::mutableStructure(int id) {
+    return const_cast<Structure*>(std::as_const(*this).findStructure(id));
+}
+
+bool Sim::targetPos(int targetUnit, int targetStruct, int& x, int& y) const {
+    if (const Unit* u = findUnit(targetUnit)) {
+        x = u->x;
+        y = u->y;
+        return true;
+    }
+    if (const Structure* s = findStructure(targetStruct)) {
+        x = s->cx();
+        y = s->cy();
+        return true;
+    }
+    return false;
 }
 
 void Sim::reveal(int cell, int radius) {
@@ -200,16 +255,364 @@ void Sim::orderMove(const std::vector<int>& ids, int destCell) {
     }
 }
 
+void Sim::orderAttack(const std::vector<int>& ids, int targetUnit, int targetStruct) {
+    for (int id : ids) {
+        Unit* u = mutableUnit(id);
+        if (!u || u->id == targetUnit)
+            continue;
+        u->targetUnit = targetUnit;
+        u->targetStruct = targetStruct;
+    }
+}
+
+void Sim::orderHarvest(const std::vector<int>& ids, int cell) {
+    for (int id : ids) {
+        Unit* u = mutableUnit(id);
+        if (!u || !u->harvester)
+            continue;
+        u->targetUnit = u->targetStruct = -1;
+        u->harvMode = Unit::Harv::ToOre;
+        u->harvCell = cell;
+        u->harvTimer = 0;
+        // Drop any in-flight reservation and stop; tickHarvest paths next tick.
+        if (u->reservedCell >= 0 && occupant_[u->reservedCell] == u->id &&
+            u->reservedCell != u->occCell)
+            occupant_[u->reservedCell] = -1;
+        u->reservedCell = -1;
+        u->blockedTicks = 0;
+        u->path.clear();
+        u->destCell = -1;
+    }
+}
+
+void Sim::power(const std::string& house, int& produced, int& drained) const {
+    produced = drained = 0;
+    for (const auto& s : structures_) {
+        if (s.house != house)
+            continue;
+        if (s.stats.power >= 0)
+            produced += s.stats.power;
+        else
+            drained -= s.stats.power;
+    }
+}
+
+int Sim::findOre(int from) const {
+    int fx = from % kSize, fy = from / kSize;
+    for (int r = 0; r < kSize; r++) {
+        int best = -1, bestD = INT32_MAX;
+        for (int dy = -r; dy <= r; dy++) {
+            for (int dx = -r; dx <= r; dx++) {
+                if (std::max(std::abs(dx), std::abs(dy)) != r)
+                    continue;
+                int x = fx + dx, y = fy + dy;
+                if (x < 0 || x >= kSize || y < 0 || y >= kSize)
+                    continue;
+                int c = y * kSize + x;
+                if (oreBails_[c] > 0 && !blocked_[c] &&
+                    dx * dx + dy * dy < bestD) {
+                    best = c;
+                    bestD = dx * dx + dy * dy;
+                }
+            }
+        }
+        if (best >= 0)
+            return best;
+    }
+    return -1;
+}
+
+void Sim::tickHarvest(Unit& u) {
+    switch (u.harvMode) {
+    case Unit::Harv::None:
+        return;
+    case Unit::Harv::ToOre: {
+        if (!u.path.empty())
+            return;
+        int c = u.cell();
+        if (oreBails_[c] > 0) {
+            u.harvMode = Unit::Harv::Harvest;
+            u.harvTimer = 0;
+            return;
+        }
+        int target = findOre(u.harvCell >= 0 ? u.harvCell : c);
+        if (target < 0) {
+            u.harvMode = Unit::Harv::None; // map is picked clean
+            return;
+        }
+        u.path = findPath(u.occCell, target, u.stats.speedClass, u.id);
+        u.destCell = u.path.empty() ? -1 : int(u.path.back());
+        if (u.path.empty())
+            u.harvMode = Unit::Harv::None;
+        return;
+    }
+    case Unit::Harv::Harvest: {
+        int c = u.cell();
+        if (oreBails_[c] == 0) {
+            u.harvMode = Unit::Harv::ToOre;
+            return;
+        }
+        if (++u.harvTimer < 15) // ~1s per bail
+            return;
+        u.harvTimer = 0;
+        u.harvCell = c;
+        if (oreGem_[c])
+            u.gemBails++;
+        else
+            u.bails++;
+        if (--oreBails_[c] == 0) {
+            // Approximation: ore sat on clear ground (we lost the original
+            // land type when the overlay was applied).
+            land_[c] = Land::Clear;
+            oreGem_[c] = 0;
+            Event ev;
+            ev.type = Event::OreDepleted;
+            ev.cell = c;
+            ev.x = (c % kSize) * kLepton + kLepton / 2;
+            ev.y = (c / kSize) * kLepton + kLepton / 2;
+            events_.push_back(ev);
+        }
+        if (u.bails + u.gemBails >= rules_->bailCount())
+            u.harvMode = Unit::Harv::ToRef;
+        else if (oreBails_[c] == 0)
+            u.harvMode = Unit::Harv::ToOre;
+        return;
+    }
+    case Unit::Harv::ToRef: {
+        if (!u.path.empty())
+            return;
+        const Structure* refinery = nullptr;
+        int bestD = INT32_MAX;
+        for (const auto& s : structures_) {
+            if (s.type != "proc" || s.house != u.house)
+                continue;
+            int dx = s.cx() - u.x, dy = s.cy() - u.y;
+            if (dx * dx + dy * dy < bestD) {
+                bestD = dx * dx + dy * dy;
+                refinery = &s;
+            }
+        }
+        if (!refinery) {
+            u.harvMode = Unit::Harv::None; // nowhere to unload; stay loaded
+            return;
+        }
+        // Docked = standing in a cell adjacent to the footprint.
+        int cx = u.cell() % kSize, cy = u.cell() / kSize;
+        int sx = refinery->cell % kSize, sy = refinery->cell / kSize;
+        if (cx >= sx - 1 && cx <= sx + refinery->w && cy >= sy - 1 &&
+            cy <= sy + refinery->h) {
+            u.harvMode = Unit::Harv::Unload;
+            u.harvTimer = 0;
+            return;
+        }
+        // Path at the footprint; A* falls back to the closest reachable
+        // cell, which is one adjacent to the building.
+        int goal = (sy + refinery->h / 2) * kSize + sx + refinery->w / 2;
+        u.path = findPath(u.occCell, goal, u.stats.speedClass, u.id);
+        u.destCell = u.path.empty() ? -1 : int(u.path.back());
+        if (u.path.empty())
+            u.harvMode = Unit::Harv::None;
+        return;
+    }
+    case Unit::Harv::Unload: {
+        if (++u.harvTimer < 30) // ~2s to unload
+            return;
+        credits_[u.house] +=
+            u.bails * rules_->goldValue() + u.gemBails * rules_->gemValue();
+        u.bails = u.gemBails = 0;
+        u.harvTimer = 0;
+        u.harvMode = Unit::Harv::ToOre; // head back for more
+        return;
+    }
+    }
+}
+
 void Sim::tick() {
+    events_.clear();
     for (auto& u : units_) {
         bool wasMoving = u.moving();
         tickUnit(u);
         if (wasMoving && !playerHouse_.empty() && u.house == playerHouse_)
             reveal(u.cell(), u.stats.sight);
     }
+    tickProjectiles();
+    units_.erase(std::remove_if(units_.begin(), units_.end(),
+                                [](const Unit& u) { return u.hp <= 0; }),
+                 units_.end());
+    structures_.erase(std::remove_if(structures_.begin(), structures_.end(),
+                                     [](const Structure& s) { return s.hp <= 0; }),
+                      structures_.end());
+}
+
+bool Sim::tickCombat(Unit& u) {
+    if (u.cooldown > 0)
+        u.cooldown--;
+    if (!u.hasTarget()) {
+        // Idle turret eases back to face forward.
+        int diff = ((u.facing - u.turretFacing + 128) & 0xff) - 128;
+        u.turretFacing =
+            (u.turretFacing + std::clamp(diff, -u.stats.rot, u.stats.rot)) & 0xff;
+        return false;
+    }
+    const WeaponStats* w = u.stats.primary;
+    int tx = 0, ty = 0;
+    if (!w || !targetPos(u.targetUnit, u.targetStruct, tx, ty)) {
+        u.targetUnit = u.targetStruct = -1; // target gone (or we can't shoot)
+        return false;
+    }
+    int dx = tx - u.x, dy = ty - u.y;
+    double dist = std::sqrt(double(dx) * dx + double(dy) * dy);
+    int desired = directionTo(dx, dy);
+
+    if (dist > w->range) {
+        // Chase: (re)path when we have no destination or the target strayed
+        // more than a couple of cells from where we were headed.
+        int tcell = (ty / kLepton) * kSize + (tx / kLepton);
+        bool needPath = u.destCell < 0;
+        if (!needPath) {
+            int dcx = u.destCell % kSize - tcell % kSize;
+            int dcy = u.destCell / kSize - tcell / kSize;
+            needPath = dcx * dcx + dcy * dcy > 4;
+        }
+        if (needPath) {
+            int from = u.infantry ? u.cell() : u.occCell;
+            u.path = findPath(from, tcell, u.stats.speedClass, u.id);
+            u.destCell = u.path.empty() ? -1 : int(u.path.back());
+            if (u.path.empty()) {
+                u.targetUnit = u.targetStruct = -1; // unreachable: give up
+                return false;
+            }
+        }
+        if (u.turreted) { // track while driving
+            int diff = ((desired - u.turretFacing + 128) & 0xff) - 128;
+            u.turretFacing =
+                (u.turretFacing + std::clamp(diff, -u.stats.rot, u.stats.rot)) & 0xff;
+        }
+        return false;
+    }
+
+    // In range. Vehicles mid-way into a reserved cell finish that move first.
+    if (!u.infantry && u.reservedCell >= 0)
+        return false;
+    u.path.clear();
+    u.destCell = -1;
+
+    // Aim with the turret if we have one, else pivot the body.
+    int aim = u.turreted ? u.turretFacing : u.facing;
+    int diff = ((desired - aim + 128) & 0xff) - 128;
+    int step = std::clamp(diff, -u.stats.rot, u.stats.rot);
+    if (u.turreted)
+        u.turretFacing = (u.turretFacing + step) & 0xff;
+    else
+        u.facing = (u.facing + step) & 0xff;
+    if (std::abs(diff - step) > 8)
+        return true; // still traversing onto the target
+
+    if (u.cooldown == 0) {
+        Projectile p;
+        p.x = u.x;
+        p.y = u.y;
+        p.tx = tx;
+        p.ty = ty;
+        p.targetUnit = u.targetUnit;
+        p.targetStruct = u.targetStruct;
+        p.weapon = w;
+        p.facing = desired;
+        projectiles_.push_back(p);
+        u.cooldown = w->rof;
+    }
+    return true;
+}
+
+void Sim::tickProjectiles() {
+    size_t count = projectiles_.size(); // impacts may add none; safe bound
+    for (size_t i = 0; i < count; i++) {
+        Projectile& p = projectiles_[i];
+        int tx, ty;
+        if (targetPos(p.targetUnit, p.targetStruct, tx, ty)) {
+            p.tx = tx; // home on the live target
+            p.ty = ty;
+        }
+        int dx = p.tx - p.x, dy = p.ty - p.y;
+        double dist = std::sqrt(double(dx) * dx + double(dy) * dy);
+        if (dist <= p.weapon->speed) {
+            p.x = p.tx;
+            p.y = p.ty;
+            impact(p);
+            p.weapon = nullptr; // tombstone
+        } else {
+            p.facing = directionTo(dx, dy);
+            p.x += int(std::lround(dx * p.weapon->speed / dist));
+            p.y += int(std::lround(dy * p.weapon->speed / dist));
+        }
+    }
+    projectiles_.erase(std::remove_if(projectiles_.begin(), projectiles_.end(),
+                                      [](const Projectile& p) { return !p.weapon; }),
+                       projectiles_.end());
+}
+
+void Sim::impact(const Projectile& p) {
+    const WarheadStats* wh = p.weapon->warhead;
+    Event ev;
+    ev.type = Event::Impact;
+    ev.x = p.x;
+    ev.y = p.y;
+    ev.warhead = wh;
+    int dealt = 0;
+    if (Unit* t = mutableUnit(p.targetUnit)) {
+        dealt = rules_->modifyDamage(p.weapon->damage, wh, t->stats.armor, 0);
+        t->hp -= dealt;
+        ev.infantry = t->infantry;
+        if (t->hp <= 0)
+            killUnit(*t);
+    } else if (Structure* s = mutableStructure(p.targetStruct)) {
+        dealt = rules_->modifyDamage(p.weapon->damage, wh, s->stats.armor, 0);
+        s->hp -= dealt;
+        if (s->hp <= 0)
+            killStructure(*s);
+    } else {
+        dealt = p.weapon->damage; // target died mid-flight: ground impact
+    }
+    ev.damage = dealt;
+    events_.push_back(ev);
+}
+
+void Sim::killUnit(Unit& u) {
+    u.hp = 0; // purged at the end of tick()
+    if (u.occCell >= 0 && occupant_[u.occCell] == u.id)
+        occupant_[u.occCell] = -1;
+    if (u.reservedCell >= 0 && occupant_[u.reservedCell] == u.id)
+        occupant_[u.reservedCell] = -1;
+    u.occCell = u.reservedCell = -1;
+    u.path.clear();
+    u.destCell = -1;
+    Event ev;
+    ev.type = Event::UnitDied;
+    ev.x = u.x;
+    ev.y = u.y;
+    ev.infantry = u.infantry;
+    events_.push_back(ev);
+}
+
+void Sim::killStructure(Structure& s) {
+    s.hp = 0; // purged at the end of tick()
+    int scx = s.cell % kSize, scy = s.cell / kSize;
+    for (int by = 0; by < s.h; by++)
+        for (int bx = 0; bx < s.w; bx++)
+            if (scx + bx < kSize && scy + by < kSize)
+                blocked_[(scy + by) * kSize + scx + bx] = 0;
+    Event ev;
+    ev.type = Event::StructDied;
+    ev.x = s.cx();
+    ev.y = s.cy();
+    events_.push_back(ev);
 }
 
 void Sim::tickUnit(Unit& u) {
+    if (tickCombat(u))
+        return; // standing and fighting
+    if (u.harvester)
+        tickHarvest(u); // may issue a path handled below
     if (u.path.empty()) {
         u.destCell = -1;
         return;
