@@ -39,12 +39,14 @@ public:
     };
 
     Sim() : land_(kSize * kSize, Land::Clear), blocked_(kSize * kSize, 0),
-            occupant_(kSize * kSize, -1) {}
+            occupant_(kSize * kSize, -1), explored_(kSize * kSize, 0) {}
 
     // --- setup ---
     void setLand(int cell, Land land) { land_[cell] = land; }
     void setBlocked(int cell) { blocked_[cell] = 1; }
     void setRules(const Rules* rules) { rules_ = rules; }
+    // House whose units lift the shroud (empty = reveal everything).
+    void setPlayerHouse(std::string house) { playerHouse_ = std::move(house); }
     // Adds a unit at a cell center and marks occupancy. Returns its id.
     int addUnit(Unit u, int cell);
 
@@ -54,6 +56,14 @@ public:
     Land landAt(int cell) const { return land_[cell]; }
     // A cell a unit of this class may stand in (terrain + static blockers).
     bool passable(int cell, SpeedClass cls) const;
+
+    // --- shroud ---
+    bool explored(int cell) const {
+        return playerHouse_.empty() || explored_[cell];
+    }
+    // Marks cells within `radius` cells of `cell` explored (RA shroud never
+    // regrows). Used for player structures at load; units reveal as they move.
+    void reveal(int cell, int radius);
 
     // --- commands ---
     // Orders each unit to the closest free cell around destCell (first unit
@@ -77,8 +87,10 @@ private:
     std::vector<Land> land_;
     std::vector<uint8_t> blocked_;  // static: structures, terrain objects, walls
     std::vector<int> occupant_;     // unit id per cell, -1 free (vehicles/ships)
+    std::vector<uint8_t> explored_; // player-house shroud state
     std::vector<Unit> units_;
     const Rules* rules_ = nullptr;
+    std::string playerHouse_;
     int nextId_ = 0;
 };
 

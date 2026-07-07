@@ -48,8 +48,24 @@ int Sim::addUnit(Unit u, int cell) {
         u.occCell = cell;
         occupant_[cell] = u.id;
     }
+    if (!playerHouse_.empty() && u.house == playerHouse_)
+        reveal(cell, u.stats.sight);
     units_.push_back(std::move(u));
     return units_.back().id;
+}
+
+void Sim::reveal(int cell, int radius) {
+    int cx = cell % kSize, cy = cell / kSize;
+    for (int dy = -radius; dy <= radius; dy++) {
+        for (int dx = -radius; dx <= radius; dx++) {
+            // +radius rounds the circle like the original sight tables do.
+            if (dx * dx + dy * dy > radius * radius + radius)
+                continue;
+            int x = cx + dx, y = cy + dy;
+            if (x >= 0 && x < kSize && y >= 0 && y < kSize)
+                explored_[y * kSize + x] = 1;
+        }
+    }
 }
 
 bool Sim::passable(int cell, SpeedClass cls) const {
@@ -185,8 +201,12 @@ void Sim::orderMove(const std::vector<int>& ids, int destCell) {
 }
 
 void Sim::tick() {
-    for (auto& u : units_)
+    for (auto& u : units_) {
+        bool wasMoving = u.moving();
         tickUnit(u);
+        if (wasMoving && !playerHouse_.empty() && u.house == playerHouse_)
+            reveal(u.cell(), u.stats.sight);
+    }
 }
 
 void Sim::tickUnit(Unit& u) {

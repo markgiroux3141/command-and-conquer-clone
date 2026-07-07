@@ -33,7 +33,7 @@ see [ASSETS.md](ASSETS.md) and the licensing notes in
 ### game — playable shell (Phase 4)
 
 ```
-build\Release\game.exe <map.ini> <data-root> [--scale N]
+build\Release\game.exe <map.ini> <data-root> [--scale N] [--house H] [--no-shroud]
                        [--sim-ticks N] [--move i,cx,cy]... [--dump out.bmp]
 ```
 
@@ -47,8 +47,9 @@ build\Release\game.exe data\assets\red_alert\allied\MAIN\general\scg01ea.ini ^
 Runs mapview's renderer on a fixed 15 ticks/s simulation: left-click or
 drag-box to select units, right-click to order them around (A* pathfinding
 over land types from the TMP control maps + rules.ini movement percents,
-rotation at ROT, cell-occupancy collision). WASD/arrows/mouse-edge scroll,
-Esc quits. `--sim-ticks N` runs headlessly instead: applies `--move` orders
+rotation at ROT, cell-occupancy collision), with RA-style shroud from the
+player house's viewpoint (`--house`, default Greece; `--no-shroud` reveals
+all). WASD/arrows/mouse-edge scroll, Esc quits. `--sim-ticks N` runs headlessly instead: applies `--move` orders
 (unit index from the printed list, absolute 128-grid cell coords), advances N
 ticks, prints unit cells before/after, and `--dump`s the world to BMP.
 

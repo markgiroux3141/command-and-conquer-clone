@@ -2,7 +2,7 @@
 // simulation (15 ticks/s like RA), rules.ini unit stats, and right-click move
 // orders with A* pathfinding.
 //
-//   game <map.ini> <data-root> [--scale N]
+//   game <map.ini> <data-root> [--scale N] [--house H] [--no-shroud]
 //        [--sim-ticks N] [--move i,cx,cy]... [--dump out.bmp]
 //
 // Interactive: WASD/arrows/mouse-edge scroll, left-click/drag select,
@@ -53,6 +53,13 @@ const char* strArg(int argc, char** argv, const char* name) {
         if (std::strcmp(argv[i], name) == 0)
             return argv[i + 1];
     return nullptr;
+}
+
+bool flagArg(int argc, char** argv, const char* name) {
+    for (int i = 3; i < argc; i++)
+        if (std::strcmp(argv[i], name) == 0)
+            return true;
+    return false;
 }
 
 std::string theaterDirName(const game::MapFile& map) {
@@ -175,7 +182,7 @@ void drawObject(game::Canvas& c, const DrawObject& o, const fmt::Palette& pal,
 int main(int argc, char** argv) {
     if (argc < 3) {
         std::fprintf(stderr,
-                     "usage: game <map.ini> <data-root> [--scale N]\n"
+                     "usage: game <map.ini> <data-root> [--scale N] [--house H] [--no-shroud]\n"
                      "            [--sim-ticks N] [--move i,cx,cy]... [--dump out.bmp]\n"
                      "  data-root example: data/assets/red_alert/allied\n");
         return 2;
@@ -215,6 +222,11 @@ int main(int argc, char** argv) {
 
         game::Sim sim;
         sim.setRules(&rules);
+        // Shroud is drawn from this house's point of view.
+        std::string playerHouse = strArg(argc, argv, "--house")
+                                      ? strArg(argc, argv, "--house") : "Greece";
+        if (!flagArg(argc, argv, "--no-shroud"))
+            sim.setPlayerHouse(playerHouse);
 
         for (int cy = 0; cy < ch; cy++) {
             for (int cx = 0; cx < cw; cx++) {
@@ -346,6 +358,8 @@ int main(int argc, char** argv) {
                 for (int bx = 0; bx < (shp->width + kTile - 1) / kTile; bx++)
                     if (scx + bx < kSize && scy + by < kSize)
                         sim.setBlocked((scy + by) * kSize + scx + bx);
+            if (s.house == playerHouse)
+                sim.reveal(s.cell, rules.unit(s.type, game::UnitKind::Vehicle).sight);
         }
 
         // ---- Sim units from the scenario ----
@@ -398,16 +412,42 @@ int main(int argc, char** argv) {
             return o;
         };
 
+        // Anything whose center sits in an unexplored cell is hidden.
+        auto objectVisible = [&](const DrawObject& o) {
+            int cx = cx0 + (o.x + o.shp->width / 2) / kTile;
+            int cy = cy0 + (o.y + o.shp->height / 2) / kTile;
+            if (cx < 0 || cx >= kSize || cy < 0 || cy >= kSize)
+                return false;
+            return sim.explored(cy * kSize + cx);
+        };
+
         auto buildDrawList = [&]() {
-            std::vector<DrawObject> objects = structures;
+            std::vector<DrawObject> objects;
+            for (const auto& s : structures)
+                if (objectVisible(s))
+                    objects.push_back(s);
             for (const auto& u : sim.units())
                 if (auto o = unitDrawObject(u))
-                    objects.push_back(*o);
+                    if (objectVisible(*o))
+                        objects.push_back(*o);
             std::stable_sort(objects.begin(), objects.end(),
                              [](const DrawObject& a, const DrawObject& b) {
                                  return a.y < b.y;
                              });
             return objects;
+        };
+
+        // Black out unexplored cells of the visible window (world-pixel view
+        // rect at offX/offY). Drawn over objects, under the cursor.
+        auto drawShroud = [&](game::Canvas& c, int offX, int offY) {
+            int c0 = std::max(0, offX / kTile), r0 = std::max(0, offY / kTile);
+            int c1 = std::min(cw - 1, (offX + c.w) / kTile);
+            int r1 = std::min(ch - 1, (offY + c.h) / kTile);
+            for (int cy = r0; cy <= r1; cy++)
+                for (int cx = c0; cx <= c1; cx++)
+                    if (!sim.explored((cy0 + cy) * kSize + cx0 + cx))
+                        game::fillRect(c, cx * kTile - offX, cy * kTile - offY,
+                                       kTile, kTile, 0xff000000);
         };
 
         // ---- Headless sim run ----
@@ -439,6 +479,7 @@ int main(int argc, char** argv) {
             if (dumpPath) {
                 for (const auto& o : buildDrawList())
                     drawObject(mc, o, pal, 0, 0);
+                drawShroud(mc, 0, 0);
                 SDL_Surface* outSurf = mapSurf;
                 if (scale > 1) {
                     outSurf = SDL_CreateRGBSurfaceWithFormat(0, mapSurf->w * scale,
@@ -580,6 +621,7 @@ int main(int argc, char** argv) {
             objects = buildDrawList(); // positions may have ticked above
             for (const auto& o : objects)
                 drawObject(wc, o, pal, int(camX), int(camY));
+            drawShroud(wc, int(camX), int(camY));
 
             if (dragging && (mstate & SDL_BUTTON_LMASK))
                 game::drawRect(wc, std::min(dragX0, mx), std::min(dragY0, my),

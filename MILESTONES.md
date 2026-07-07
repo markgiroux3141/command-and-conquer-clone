@@ -80,7 +80,10 @@ lie.
 - [x] Unit movement: land-type cell grid, 8-dir A*, per-tick rotation+motion,
       cell occupancy/reservation collision (`src/game/sim.{h,cpp}`; verified
       headlessly via `game --sim-ticks --move` on scg01ea) (2026-07-06)
-- [ ] Fog of war / shroud
+- [x] Shroud: player-house explored bitmap, Sight-radius reveal from units
+      (as they move) and structures (at load); unexplored cells drawn black,
+      objects in them hidden. `--house H` picks the viewpoint (default
+      Greece), `--no-shroud` disables. RA1-style: never regrows. (2026-07-07)
 
 Gotchas learned: RA TMP stores a per-slot land-type byte (IControl_Type::
 ColorMap at header offset 32; lookup table in CDATA.CPP Land_Type) — that plus
@@ -178,4 +181,7 @@ carries the delta. Update this file's checkboxes *before* writing a handoff.
   on scg01ea: jeep paths around cliffs/water to the exact ordered cell,
   water destinations clamp to nearest reachable land, three jeeps ordered to
   one cell settle on adjacent cells, infantry walk with sub-cell offsets;
-  interactive window smoke-tested.
+  interactive window smoke-tested. Shroud landed same session (dated
+  2026-07-07): sight circles at start, corridor revealed along a jeep's
+  route, hidden Soviet base until scouted — **Phase 4 complete.** Next:
+  Phase 5 (combat & economy) or Phase 9 (map editor).
