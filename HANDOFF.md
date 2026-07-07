@@ -1,64 +1,72 @@
-# Handoff — session 2 → session 3 (2026-07-06)
+# Handoff — session 3 → session 4 (2026-07-06)
 
-Session 2 completed Phases 2 AND 3 (map rendering + units on screen), plus a
-late fix: mouse.shp is Dune II-format SHP → new decoder src/formats/shpd2.cpp.
+Session 3 completed Phase 4's simulation core: `game.exe` (fixed 15/s tick
+loop), rules.ini stat loading, land-type passability from TMP control maps,
+A* pathfinding with cell-occupancy collision. **Shroud is the one Phase 4 box
+left unticked.**
 
 ## Read first
 
-1. `MILESTONES.md` — Phase 0–3 done and verified; **Phase 4 (simulation core)
-   is next and not yet started.** Phase 9 (map editor) queued as a side quest.
-2. `README.md` — build commands and tool usage (incl. `mapview`).
-3. `ASSETS.md` — where every asset lives.
-
-Don't re-read `src/formats/` (PAL/SHP/TMP/AUD/INI/LCW/CPS decoders, verified)
-or `src/game/` (map loader, house remaps, render helpers — all verified via
-mapview renders in three theaters).
+1. `MILESTONES.md` — checkboxes + per-phase gotchas are current.
+2. `README.md` — build commands, `game.exe` usage (incl. headless sim flags).
+3. Only then source: `src/game/sim.{h,cpp}` + `src/game/rules.{h,cpp}` are the
+   new sim core; `src/game_main.cpp` is the shell. Don't re-read
+   `src/formats/` or the render/map/house code (all verified).
 
 ## Current state
 
 - Everything compiles clean: `cmake --build build --config Release` (MSVC).
-- `mapview <map.ini> <data-root>` is the de-facto game shell: renders any RA
-  map with terrain/overlays/terrain-objects plus scenario structures, units
-  and infantry (house colors, facings, turrets), interactive scrolling,
-  click/drag-box selection with brackets + health bars, SHP cursor.
-- No simulation exists: nothing moves, no game loop, no rules.ini stats.
+- `game.exe <map.ini> <data-root>` plays a scenario: select units, right-click
+  move orders, units path around water/cliffs/structures, pivot at ROT, spread
+  onto adjacent cells instead of stacking. Sim is deterministic, in leptons
+  (256/cell), advanced only by `Sim::tick()` at 15/s.
+- `mapview` unchanged (pure viewer). game_main.cpp duplicates mapview's
+  ArtCache/terrain-bake code — consolidation into the game lib is a pending
+  cleanup, do it when one of the two next changes there.
+- Verified headlessly (see recipe) + interactive smoke test only. Nobody has
+  played it with eyes-on yet — worth doing once before building more on top.
 
-## Next task: Phase 4 — simulation core
+## Next task: finish Phase 4, then Phase 5 (combat & economy)
 
-Suggested order:
-1. **Fixed-tick loop**: split mapview's interactive mode into sim tick
-   (default 15/s like RA) + render; probably time to promote it to `game.exe`
-   and keep mapview as pure viewer.
-2. **rules.ini stats**: load `red_alert/*/INSTALL/REDALERT/local/rules.ini`
-   ([JEEP] Speed=, Strength=...) into unit type table. INI parser handles it
-   already (verified in Phase 1).
-3. **Movement**: cell occupancy grid from map + structures; A* over it;
-   right-click move orders for selected units; smooth per-tick interpolation
-   cell→cell; rotate facing toward heading (TD/RA turn logic: step facing by
-   ROT per tick).
-4. **Shroud** can wait until the end of the phase.
+1. **Shroud**: per-house explored bitmap, reveal radius = Sight from
+   UnitStats (already loaded), black/half-dark overlay at render. Original:
+   MAP.CPP Sight_From.
+2. Then Phase 5 (weapons/damage from rules.ini, death anims, harvester loop,
+   power) — or Phase 9 map editor if variety appeals; Phase 4 unblocks it.
 
-## Gotchas not in the docs
+## Gotchas not in MILESTONES.md
 
-- Infantry art is in `INSTALL/REDALERT/hires/`, not conquer. Civilians c3–c10
-  have no art; fall back to c1 (mapview does).
-- War factory = weap.shp + weap2.shp roof overlay (mapview handles `<type>2`).
-- Structures like BARL (explosive barrels) appear in [STRUCTURES]; their
-  selection boxes look oversized because SHP frames have empty margins —
-  cosmetic, fix someday with trimmed bounds.
-- Facing 0 = north, increases clockwise, 32 per compass step;
-  frame = BodyShape[facing>>3] (`game::facingToFrame`). Infantry standing
-  frame = `(8 - (facing>>5)) & 7`.
-- House→color: HDATA.CPP mapping in `game/house.cpp` (Greece=LtBlue, USSR=Red,
-  England=Green...). Remaps built from PALETTE.CPS row 0 → row pcolor.
-- Shadow index 4 = 50% darken approximation (not original fading tables).
+- `game` CMake target name was taken by the engine lib → the exe target is
+  `game_exe` with OUTPUT_NAME `game`.
+- Sim facing is DirType (0=N, 64=E, clockwise, 0-255); `directionTo(dx,dy)`
+  handles the +y-is-south flip. Draw-frame mapping stays `game::facingToFrame`
+  (vehicles) / `(8-(facing>>5))&7` (infantry standing).
+- Non-infantry occupancy: a moving unit owns `occCell` **and** reserves
+  `path.front()` before entering (`occupant_` grid). If you add
+  teleport/death, free both cells or units will path around ghosts.
+- orderMove spirals per call; two separate orderMove calls can pick the same
+  destination (occupancy isn't claimed until arrival) — the loser re-paths and
+  parks adjacent, which looks fine, but a shared claim map would be cleaner.
+- Infantry walk animations don't exist yet — they slide in their standing
+  frame. Walk cycles are ~Phase 5 polish (frames after the 8 standing ones).
+- rules.ini land percents parse via std::stoi("90%") → 90; Winged hardcoded
+  100% everywhere.
 
-## Verification recipe for Phase 4
+## Verification recipe
 
-Interactive: select a jeep on scg01ea, right-click across the map — it should
-path around water/cliffs, rotate smoothly, and arrive. Headless: add a
-`--sim-ticks N --move unit,cell` style debug flag and dump before/after BMPs;
-compare positions.
+Headless (was used this session):
+
+```
+build\Release\game.exe data\assets\red_alert\allied\MAIN\general\scg01ea.ini ^
+    data\assets\red_alert\allied --sim-ticks 600 --move 0,55,75 --dump out.bmp
+```
+
+- unit 0 (Greece jeep at 63,50) must end at exactly `cell 55,75`, having
+  crossed the cliff pass; convert BMP → PNG (PIL) and Read it to eyeball.
+- `--move 0,50,79` (water) → settles at nearest land (48,77), sim goes idle.
+- Three `--move i,55,75` orders → adjacent cells, never stacked.
+- Interactive: select jeeps on scg01ea, right-click across the river — smooth
+  pivot + path around water at ~1.5 cells/s.
 
 ## Context handoff protocol
 

@@ -13,6 +13,9 @@ struct TmpFile {
     int tileHeight = 0;
     // One entry per template slot; empty vector = empty slot.
     std::vector<std::vector<uint8_t>> tiles;
+    // Land-type control byte per template slot (IControl_Type::ColorMap; see
+    // TemplateTypeClass::Land_Type). Values 0-15; empty if absent.
+    std::vector<uint8_t> landBytes;
 
     static TmpFile load(const std::string& path);
 };

@@ -72,10 +72,24 @@ lie.
 
 ## Phase 4 — Simulation core
 
-- [ ] Fixed-tick game loop, deterministic sim/render split
-- [ ] rules.ini → unit/structure stat tables
-- [ ] Unit movement: cell grid, A* pathfinding, collision
+- [x] Fixed-tick game loop (15/s), deterministic sim/render split — new
+      `game.exe` (`src/game_main.cpp`); mapview stays a pure viewer (2026-07-06)
+- [x] rules.ini → unit stat tables (`src/game/rules.{h,cpp}`: Strength/Speed/
+      ROT/Sight, Tracked= → speed class, [Clear]/[Water]/... land percents)
+      (2026-07-06)
+- [x] Unit movement: land-type cell grid, 8-dir A*, per-tick rotation+motion,
+      cell occupancy/reservation collision (`src/game/sim.{h,cpp}`; verified
+      headlessly via `game --sim-ticks --move` on scg01ea) (2026-07-06)
 - [ ] Fog of war / shroud
+
+Gotchas learned: RA TMP stores a per-slot land-type byte (IControl_Type::
+ColorMap at header offset 32; lookup table in CDATA.CPP Land_Type) — that plus
+the rules.ini land sections gives passability with zero hardcoded terrain
+tables. Speed= scales as `*256/100` → leptons/tick (TECHNO.CPP _Scale_To_256);
+256 leptons per cell. Vehicles default WHEEL, `Tracked=yes` → TRACK
+(UNIT.CPP). Approximations to revisit: structure/terrain-object footprints =
+SHP cell bounds (real game uses BDATA/TDATA occupy lists), infantry don't
+occupy cells (no infantry-vs-infantry collision), shadow still 50% darken.
 
 ## Phase 5 — Combat & economy
 
@@ -156,3 +170,12 @@ carries the delta. Update this file's checkboxes *before* writing a handoff.
   UI + cursor. Verified on scg01ea (Soviet base red, Greece jeeps blue,
   war factory roof, brackets/health bars via --select). Next: Phase 4
   (simulation core — game loop, rules.ini stats, movement/pathfinding).
+- **2026-07-06 (session 3):** Phase 4 mostly complete (shroud remains).
+  TMP decoder now reads the land-type control map; new rules loader
+  (stats + land speed percents), sim core (A*, occupancy, per-tick
+  rotation/movement in leptons), and `game.exe` with a fixed 15/s tick loop,
+  right-click move orders and headless `--sim-ticks/--move` flags. Verified
+  on scg01ea: jeep paths around cliffs/water to the exact ordered cell,
+  water destinations clamp to nearest reachable land, three jeeps ordered to
+  one cell settle on adjacent cells, infantry walk with sub-cell offsets;
+  interactive window smoke-tested.

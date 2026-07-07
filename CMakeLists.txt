@@ -24,8 +24,15 @@ add_library(game STATIC
     src/game/house.cpp
     src/game/map.cpp
     src/game/render.cpp
+    src/game/rules.cpp
+    src/game/sim.cpp
 )
 target_link_libraries(game PUBLIC formats SDL2::SDL2)
+
+# The playable shell (target name game_exe: "game" is taken by the library).
+add_executable(game_exe src/game_main.cpp)
+set_target_properties(game_exe PROPERTIES OUTPUT_NAME game)
+target_link_libraries(game_exe PRIVATE game SDL2::SDL2 SDL2::SDL2main)
 
 add_executable(shpview src/tools/shpview.cpp)
 target_link_libraries(shpview PRIVATE formats SDL2::SDL2 SDL2::SDL2main)

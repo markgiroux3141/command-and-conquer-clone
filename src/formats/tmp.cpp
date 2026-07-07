@@ -5,6 +5,7 @@
 //   4  ...                     16  u32 imgStart (pixel data)
 //   20 u32 zero, 24 u16 ?, 26 u16 magic 0x2c73
 //   28 s32 indexEnd            36  s32 indexStart
+//   32 u32 colorMap (land-type control byte per slot, IControl_Type::ColorMap)
 // Index: one byte per template slot, image number or 0xFF for empty.
 // Pixels: raw, imgStart + imageNumber * w * h.
 
@@ -41,6 +42,11 @@ TmpFile TmpFile::load(const std::string& path) {
     uint32_t indexStart = u32(36);
     if (tileSize == 0 || indexStart > indexEnd || indexEnd > data.size())
         throw std::runtime_error("TMP header out of range: " + path);
+
+    uint32_t colorMap = u32(32);
+    uint32_t slots = indexEnd - indexStart;
+    if (colorMap && colorMap + slots <= data.size())
+        tmp.landBytes.assign(data.begin() + colorMap, data.begin() + colorMap + slots);
 
     for (uint32_t i = indexStart; i < indexEnd; i++) {
         uint8_t b = data[i];

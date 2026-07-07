@@ -28,6 +28,30 @@ implementations. Game assets are **not** included and are not redistributable �
 see [ASSETS.md](ASSETS.md) and the licensing notes in
 [cnc-clone-asset-sources.md](cnc-clone-asset-sources.md).
 
+## Game
+
+### game — playable shell (Phase 4)
+
+```
+build\Release\game.exe <map.ini> <data-root> [--scale N]
+                       [--sim-ticks N] [--move i,cx,cy]... [--dump out.bmp]
+```
+
+Example — play Allied mission 1:
+
+```
+build\Release\game.exe data\assets\red_alert\allied\MAIN\general\scg01ea.ini ^
+    data\assets\red_alert\allied
+```
+
+Runs mapview's renderer on a fixed 15 ticks/s simulation: left-click or
+drag-box to select units, right-click to order them around (A* pathfinding
+over land types from the TMP control maps + rules.ini movement percents,
+rotation at ROT, cell-occupancy collision). WASD/arrows/mouse-edge scroll,
+Esc quits. `--sim-ticks N` runs headlessly instead: applies `--move` orders
+(unit index from the printed list, absolute 128-grid cell coords), advances N
+ticks, prints unit cells before/after, and `--dump`s the world to BMP.
+
 ## Tools
 
 ### shpview — sprite viewer (first milestone)
@@ -89,7 +113,8 @@ applied at render time, not decode time.
 ## Source layout
 
 - `src/formats/` — Westwood file format decoders (PAL, SHP, TMP, AUD, INI, LCW)
-- `src/game/` — engine code (map loader, generated template table)
+- `src/game/` — engine code (map loader, rules stats, simulation, template table)
+- `src/game_main.cpp` — the playable shell (game.exe)
 - `src/tools/` — asset viewers / debug utilities
 - `tools/` — asset pipeline scripts (Python MIX extractor etc.)
 - `reference/` — OpenRA + EA GPL sources (cloned, read-only reference)
