@@ -30,11 +30,23 @@ see [ASSETS.md](ASSETS.md) and the licensing notes in
 
 ## Game
 
-### game — playable shell (Phase 4)
+### play.bat — quick launcher
+
+```
+play                        Soviet sandbox (scu04eb: starting MCV, 10k credits)
+play scg01ea Greece         another mission + house
+play scu04eb USSR 5000      ... + starting credits
+play scu04eb USSR 10000 --no-shroud     extra game.exe flags pass through
+```
+
+### game — playable shell (Phases 4-6)
 
 ```
 build\Release\game.exe <map.ini> <data-root> [--scale N] [--house H] [--no-shroud]
-                       [--sim-ticks N] [--move i,cx,cy]... [--dump out.bmp]
+                       [--credits N] [--tech N] [--sim-ticks N] [--dump out.bmp]
+                       [--move i,cx,cy]... [--attack i,j]... [--attack-struct i,sid]...
+                       [--harvest i,cx,cy]... [--build b|i|v,type]... [--place cx,cy]...
+                       [--deploy i] [--ui-shot out.bmp]
 ```
 
 Example — play Allied mission 1:
@@ -45,13 +57,17 @@ build\Release\game.exe data\assets\red_alert\allied\MAIN\general\scg01ea.ini ^
 ```
 
 Runs mapview's renderer on a fixed 15 ticks/s simulation: left-click or
-drag-box to select units, right-click to order them around (A* pathfinding
-over land types from the TMP control maps + rules.ini movement percents,
-rotation at ROT, cell-occupancy collision), with RA-style shroud from the
-player house's viewpoint (`--house`, default Greece; `--no-shroud` reveals
-all). WASD/arrows/mouse-edge scroll, Esc quits. `--sim-ticks N` runs headlessly instead: applies `--move` orders
-(unit index from the printed list, absolute 128-grid cell coords), advances N
-ticks, prints unit cells before/after, and `--dump`s the world to BMP.
+drag-box to select units, right-click to move / attack an enemy / harvest
+ore / deploy a selected MCV; sidebar cameos build structures and units
+(click when the border turns green to place buildings; right-click a cameo
+cancels with refund). Credits and power live in the window title. RA-style
+shroud from the player house's viewpoint (`--house`, default Greece;
+`--no-shroud` reveals all). WASD/arrows/mouse-edge scroll, Esc quits (or
+cancels building placement). `--sim-ticks N` runs headlessly instead:
+applies the order flags (`--move/--attack/--harvest/--build/--place/
+--deploy`; unit index from the printed list, absolute 128-grid cell
+coords), advances N ticks, prints units/production/credits/power
+before/after, and `--dump`s the world to BMP.
 
 ## Tools
 
