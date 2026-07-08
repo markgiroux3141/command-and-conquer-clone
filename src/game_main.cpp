@@ -40,6 +40,8 @@ namespace {
 
 constexpr int kTile = 24;
 constexpr double kTickMs = 1000.0 / 15.0; // RA game speed: 15 ticks/s
+constexpr int kCameoW = 64, kCameoH = 48; // sidebar icon SHP size
+constexpr int kSidebarW = kCameoW * 2 + 12;
 
 int intArg(int argc, char** argv, const char* name, int fallback) {
     for (int i = 3; i < argc - 1; i++)
@@ -160,13 +162,26 @@ std::string combatAnimName(int damage, const game::WarheadStats* wh, bool water)
     }
 }
 
-// Vehicles whose SHP packs 32 turret frames after the 32 hull facings.
-bool hasTurret(const std::string& type) {
-    static const char* kTurreted[] = {"1tnk", "2tnk", "3tnk", "4tnk", "jeep"};
-    for (const char* t : kTurreted)
-        if (type == t)
-            return true;
-    return false;
+// One clickable sidebar cameo.
+struct BuildEntry {
+    std::string type;
+    game::UnitKind kind;
+    const fmt::ShpFile* icon = nullptr;
+};
+
+// Candidate build lists (the original defines type lists in code too).
+const char* kStructTypes[] = {"powr", "apwr", "proc", "silo", "barr", "tent",
+                              "weap", "dome", "fix",  "gun",  "agun", "pbox",
+                              "hbox", "tsla", "ftur", "gap",  "atek", "stek",
+                              "hpad", "afld", "kenn"};
+const char* kInfTypes[] = {"e1", "e2", "e3", "e4", "e6", "dog", "medi",
+                           "spy", "thf"};
+const char* kVehTypes[] = {"harv", "mcv",  "jeep", "apc",  "1tnk", "2tnk",
+                           "3tnk", "4tnk", "arty", "v2rl", "ftrk", "dtrk",
+                           "mnly", "mgg",  "mrj",  "ttnk"};
+
+bool isSovietHouse(const std::string& house) {
+    return house == "USSR" || house == "Ukraine" || house == "BadGuy";
 }
 
 bool isShipType(const std::string& type) {
@@ -213,8 +228,10 @@ int main(int argc, char** argv) {
     if (argc < 3) {
         std::fprintf(stderr,
                      "usage: game <map.ini> <data-root> [--scale N] [--house H] [--no-shroud]\n"
-                     "            [--sim-ticks N] [--move i,cx,cy]... [--attack i,j]...\n"
-                     "            [--attack-struct i,sid]... [--dump out.bmp]\n"
+                     "            [--credits N] [--tech N] [--sim-ticks N] [--dump out.bmp]\n"
+                     "            [--move i,cx,cy]... [--attack i,j]... [--attack-struct i,sid]...\n"
+                     "            [--harvest i,cx,cy]... [--build b|i|v,type]... [--place cx,cy]\n"
+                     "            [--deploy i]\n"
                      "  data-root example: data/assets/red_alert/allied\n");
         return 2;
     }
@@ -368,9 +385,37 @@ int main(int argc, char** argv) {
 
         // ---- Structures: sim entities (attackable) + static drawables ----
         std::vector<DrawObject> structures;
+        // Footprint = SHP cell bounds (approximation, see MILESTONES).
+        auto structFootprint = [&](const std::string& type, int& w, int& h) {
+            const fmt::ShpFile* shp = art.shp(type);
+            if (!shp || shp->frames.empty())
+                return false;
+            w = (shp->width + kTile - 1) / kTile;
+            h = (shp->height + kTile - 1) / kTile;
+            return true;
+        };
+        // Drawables for an already-registered sim structure (art + roof).
+        auto addStructDrawable = [&](const std::string& type, const std::string& house,
+                                     int cell, int sid) {
+            const fmt::ShpFile* shp = art.shp(type);
+            DrawObject o;
+            o.shp = shp;
+            o.x = (cell % kSize - cx0) * kTile;
+            o.y = (cell / kSize - cy0) * kTile;
+            o.remap = &remaps[size_t(game::houseColor(house))];
+            o.selectable = true;
+            o.structId = sid;
+            structures.push_back(o);
+            if (const fmt::ShpFile* top = art.shp(type + "2")) {
+                DrawObject o2 = o;
+                o2.shp = top;
+                o2.selectable = false;
+                structures.push_back(o2);
+            }
+        };
         for (const auto& s : map.structures) {
-            const fmt::ShpFile* shp = art.shp(s.type);
-            if (!shp || shp->frames.empty()) {
+            int w = 0, h = 0;
+            if (!structFootprint(s.type, w, h)) {
                 std::printf("note: missing structure art: %s\n", s.type.c_str());
                 continue;
             }
@@ -378,29 +423,38 @@ int main(int argc, char** argv) {
             st.type = s.type;
             st.house = s.house;
             st.cell = s.cell;
-            // Footprint = SHP cell bounds (approximation, see MILESTONES).
-            st.w = (shp->width + kTile - 1) / kTile;
-            st.h = (shp->height + kTile - 1) / kTile;
+            st.w = w;
+            st.h = h;
             st.stats = rules.unit(s.type, game::UnitKind::Structure);
             st.hp = std::max(1, st.stats.strength * s.health / 256);
             int sid = sim.addStructure(std::move(st));
-
-            DrawObject o;
-            o.shp = shp;
-            int scx = s.cell % kSize, scy = s.cell / kSize;
-            o.x = (scx - cx0) * kTile;
-            o.y = (scy - cy0) * kTile;
-            o.remap = &remaps[size_t(game::houseColor(s.house))];
-            o.selectable = true;
-            o.structId = sid;
-            structures.push_back(o);
-            if (const fmt::ShpFile* top = art.shp(s.type + "2")) {
-                DrawObject o2 = o;
-                o2.shp = top;
-                o2.selectable = false;
-                structures.push_back(o2);
-            } // addStructure blocked the footprint and revealed shroud
+            addStructDrawable(s.type, s.house, s.cell, sid);
+            // addStructure blocked the footprint and revealed shroud
         }
+
+        // ---- Production setup: starting credits + sidebar build lists ----
+        sim.setCredits(playerHouse, intArg(argc, argv, "--credits", 3000));
+        int techLevel = intArg(argc, argv, "--tech", 16);
+        std::string side = isSovietHouse(playerHouse) ? "soviet" : "allies";
+        std::vector<BuildEntry> buildStructs, buildUnits;
+        auto addBuildable = [&](const char* type, game::UnitKind kind) {
+            const auto& st = rules.unit(type, kind);
+            if (st.cost <= 0 || st.techLevel < 0 || st.techLevel > techLevel)
+                return;
+            if (st.owner.find(side) == std::string::npos)
+                return;
+            const fmt::ShpFile* icon = art.shp(std::string(type) + "icon");
+            if (!icon || icon->frames.empty())
+                return;
+            (kind == game::UnitKind::Structure ? buildStructs : buildUnits)
+                .push_back({type, kind, icon});
+        };
+        for (const char* t : kStructTypes)
+            addBuildable(t, game::UnitKind::Structure);
+        for (const char* t : kInfTypes)
+            addBuildable(t, game::UnitKind::Infantry);
+        for (const char* t : kVehTypes)
+            addBuildable(t, game::UnitKind::Vehicle);
 
         // ---- Sim units from the scenario ----
         for (const auto& u : map.units) {
@@ -408,7 +462,7 @@ int main(int argc, char** argv) {
             su.type = u.type;
             su.house = u.house;
             su.facing = u.facing;
-            su.turreted = hasTurret(u.type);
+            su.turreted = game::hasTurretArt(u.type);
             su.harvester = u.type == "harv";
             su.stats = rules.unit(u.type, isShipType(u.type) ? game::UnitKind::Ship
                                                              : game::UnitKind::Vehicle);
@@ -611,10 +665,85 @@ int main(int argc, char** argv) {
                                      argv[i + 1]);
                 }
             }
+            // Builds retry every tick until the prerequisites exist (e.g. a
+            // powr queued behind an MCV deploy).
+            std::vector<std::pair<std::string, game::UnitKind>> pendingBuilds;
+            for (int i = 3; i < argc - 1; i++) {
+                if (std::strcmp(argv[i], "--build") != 0)
+                    continue;
+                char cat = 0;
+                char type[16] = {};
+                if (std::sscanf(argv[i + 1], "%c,%15s", &cat, type) == 2)
+                    pendingBuilds.emplace_back(type,
+                                               cat == 'b' ? game::UnitKind::Structure
+                                               : cat == 'i' ? game::UnitKind::Infantry
+                                                            : game::UnitKind::Vehicle);
+                else
+                    std::fprintf(stderr, "bad --build '%s' (want b|i|v,type)\n",
+                                 argv[i + 1]);
+            }
+            // Placement spots, consumed FIFO as buildings become ready.
+            std::vector<std::pair<int, int>> placeQueue;
+            for (int i = 3; i < argc - 1; i++) {
+                int px = -1, py = -1;
+                if (std::strcmp(argv[i], "--place") == 0 &&
+                    std::sscanf(argv[i + 1], "%d,%d", &px, &py) == 2)
+                    placeQueue.emplace_back(px, py);
+            }
+            // Deployed as soon as the (possibly still-in-production) MCV
+            // exists and has room; -1 = no deploy requested.
+            int deployId = -1;
+            if (const char* p = strArg(argc, argv, "--deploy")) {
+                int idx = std::atoi(p);
+                if (idx >= 0 && idx < int(sim.units().size()))
+                    deployId = sim.units()[idx].id;
+            }
             for (auto [id, dest] : orders)
                 sim.orderMove({id}, dest);
             for (int t = 0; t < simTicks; t++) {
                 sim.tick();
+                if (deployId >= 0) {
+                    if (const auto* mcv = sim.findUnit(deployId)) {
+                        int w = 0, h = 0, cell = mcv->cell();
+                        std::string house = mcv->house; // deployMcv erases the unit
+                        if (structFootprint("fact", w, h)) {
+                            int sid = sim.deployMcv(deployId, w, h);
+                            if (sid >= 0) {
+                                addStructDrawable("fact", house, cell - 1 - kSize, sid);
+                                std::printf("tick %d: deployed MCV -> fact\n", t);
+                                deployId = -1;
+                            }
+                        }
+                    } else
+                        deployId = -1; // died
+                }
+                for (auto it = pendingBuilds.begin(); it != pendingBuilds.end();) {
+                    if (sim.startProduction(playerHouse, it->first, it->second)) {
+                        std::printf("tick %d: started building %s\n", t,
+                                    it->first.c_str());
+                        it = pendingBuilds.erase(it);
+                    } else
+                        ++it;
+                }
+                // Place a finished building as soon as it's ready.
+                if (!placeQueue.empty()) {
+                    const auto* b = sim.production(playerHouse,
+                                                   game::Sim::ProdCat::Building);
+                    if (b && b->ready) {
+                        auto [px, py] = placeQueue.front();
+                        std::string type = b->type;
+                        int w = 0, h = 0;
+                        structFootprint(type, w, h);
+                        int cell = py * kSize + px;
+                        int sid = sim.placeBuilding(playerHouse, cell, w, h);
+                        std::printf("tick %d: place %s at %d,%d: %s\n", t,
+                                    type.c_str(), px, py, sid >= 0 ? "ok" : "FAILED");
+                        if (sid >= 0) {
+                            addStructDrawable(type, playerHouse, cell, sid);
+                            placeQueue.erase(placeQueue.begin());
+                        }
+                    }
+                }
                 for (const auto& ev : sim.events()) {
                     if (ev.type == game::Sim::Event::UnitDied ||
                         ev.type == game::Sim::Event::StructDied)
@@ -631,6 +760,12 @@ int main(int argc, char** argv) {
                 processEvents();
             }
             printUnits("after: ");
+            static const char* kCatName[] = {"building", "infantry", "vehicle"};
+            for (int c = 0; c < 3; c++)
+                if (const auto* p = sim.production(playerHouse, game::Sim::ProdCat(c)))
+                    std::printf("production %s: %s %d/%d%s paid %d\n", kCatName[c],
+                                p->type.c_str(), p->progress, p->ticksTotal,
+                                p->ready ? " READY" : "", p->paid);
             std::set<std::string> houses;
             for (const auto& s : sim.structures())
                 houses.insert(s.house);
@@ -667,7 +802,8 @@ int main(int argc, char** argv) {
         // ---- Interactive: fixed-tick sim + free-running render ----
         if (SDL_Init(SDL_INIT_VIDEO) != 0)
             throw std::runtime_error(SDL_GetError());
-        int winW = std::min(mapSurf->w, 1280), winH = std::min(mapSurf->h, 800);
+        int viewW = std::min(mapSurf->w, 1280 - kSidebarW);
+        int winW = viewW + kSidebarW, winH = std::min(mapSurf->h, 800);
         SDL_Window* win = SDL_CreateWindow("game", SDL_WINDOWPOS_CENTERED,
                                            SDL_WINDOWPOS_CENTERED, winW, winH, 0);
         if (!win)
@@ -689,6 +825,38 @@ int main(int argc, char** argv) {
         uint32_t last = SDL_GetTicks();
         double tickAcc = 0;
         bool quit = false;
+
+        // ---- Sidebar layout + placement mode state ----
+        std::string placingType; // building awaiting placement (ghost follows mouse)
+        int placeW = 0, placeH = 0;
+        int sideScroll = 0;
+        auto entryPos = [&](int col, int idx, int& x, int& y) {
+            x = viewW + 4 + col * (kCameoW + 4);
+            y = 4 + idx * (kCameoH + 4) - sideScroll;
+        };
+        // Cameo under the mouse; null if none.
+        auto sidebarHit = [&](int hx, int hy) -> const BuildEntry* {
+            if (hx < viewW + 4)
+                return nullptr;
+            int col = (hx - viewW - 4) / (kCameoW + 4);
+            if (col > 1 || hx >= viewW + 4 + col * (kCameoW + 4) + kCameoW)
+                return nullptr;
+            const auto& list = col == 0 ? buildStructs : buildUnits;
+            int idx = (hy - 4 + sideScroll) / (kCameoH + 4);
+            if (idx < 0 || idx >= int(list.size()))
+                return nullptr;
+            int ex, ey;
+            entryPos(col, idx, ex, ey);
+            if (hy < ey || hy >= ey + kCameoH)
+                return nullptr;
+            return &list[idx];
+        };
+        auto prodCatOf = [](game::UnitKind kind) {
+            return kind == game::UnitKind::Structure ? game::Sim::ProdCat::Building
+                   : kind == game::UnitKind::Infantry ? game::Sim::ProdCat::Infantry
+                                                      : game::Sim::ProdCat::Vehicle;
+        };
+
         while (!quit) {
             int mx, my;
             uint32_t mstate = SDL_GetMouseState(&mx, &my);
@@ -696,13 +864,53 @@ int main(int argc, char** argv) {
 
             SDL_Event e;
             while (SDL_PollEvent(&e)) {
-                if (e.type == SDL_QUIT ||
-                    (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE))
+                if (e.type == SDL_QUIT)
                     quit = true;
+                if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE) {
+                    if (!placingType.empty())
+                        placingType.clear(); // keep the building ready
+                    else
+                        quit = true;
+                }
+                if (e.type == SDL_MOUSEWHEEL && mx >= viewW) {
+                    int rows = int(std::max(buildStructs.size(), buildUnits.size()));
+                    int maxScroll =
+                        std::max(0, rows * (kCameoH + 4) + 8 - winH);
+                    sideScroll = std::clamp(sideScroll - e.wheel.y * (kCameoH + 4),
+                                            0, maxScroll);
+                }
                 if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
-                    dragging = true;
-                    dragX0 = e.button.x;
-                    dragY0 = e.button.y;
+                    if (e.button.x >= viewW) {
+                        // Sidebar: click a cameo to build / place when ready.
+                        if (const BuildEntry* en = sidebarHit(e.button.x, e.button.y)) {
+                            auto cat = prodCatOf(en->kind);
+                            const auto* p = sim.production(playerHouse, cat);
+                            if (en->kind == game::UnitKind::Structure && p &&
+                                p->ready && p->type == en->type) {
+                                if (structFootprint(en->type, placeW, placeH))
+                                    placingType = en->type;
+                            } else if (!p) {
+                                if (!sim.startProduction(playerHouse, en->type,
+                                                         en->kind))
+                                    std::printf("can't build %s (prerequisites?)\n",
+                                                en->type.c_str());
+                            }
+                        }
+                    } else if (!placingType.empty()) {
+                        // Place the finished building at the cursor cell.
+                        int cellX = cx0 + (e.button.x + int(camX)) / kTile;
+                        int cellY = cy0 + (e.button.y + int(camY)) / kTile;
+                        int cell = cellY * kSize + cellX;
+                        int sid = sim.placeBuilding(playerHouse, cell, placeW, placeH);
+                        if (sid >= 0) {
+                            addStructDrawable(placingType, playerHouse, cell, sid);
+                            placingType.clear();
+                        }
+                    } else {
+                        dragging = true;
+                        dragX0 = e.button.x;
+                        dragY0 = e.button.y;
+                    }
                 }
                 if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT &&
                     dragging) {
@@ -743,7 +951,25 @@ int main(int argc, char** argv) {
                         }
                     }
                 }
-                if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_RIGHT) {
+                if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_RIGHT &&
+                    e.button.x >= viewW) {
+                    // Sidebar: right-click cancels that cameo's production.
+                    if (const BuildEntry* en = sidebarHit(e.button.x, e.button.y)) {
+                        auto cat = prodCatOf(en->kind);
+                        const auto* p = sim.production(playerHouse, cat);
+                        if (p && p->type == en->type) {
+                            sim.cancelProduction(playerHouse, cat);
+                            if (placingType == en->type)
+                                placingType.clear();
+                        }
+                    }
+                }
+                if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_RIGHT &&
+                    e.button.x < viewW && !placingType.empty()) {
+                    placingType.clear(); // abort placement, keep it ready
+                }
+                if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_RIGHT &&
+                    e.button.x < viewW && placingType.empty()) {
                     int wx = e.button.x + int(camX), wy = e.button.y + int(camY);
                     int cellX = cx0 + wx / kTile, cellY = cy0 + wy / kTile;
                     if (cellX >= 0 && cellX < kSize && cellY >= 0 && cellY < kSize) {
@@ -751,14 +977,29 @@ int main(int argc, char** argv) {
                         for (const auto& u : sim.units())
                             if (u.selected)
                                 ids.push_back(u.id);
-                        // Right-click on an enemy = attack, otherwise move.
+                        // Right-click on an enemy = attack; on an own selected
+                        // MCV = deploy; otherwise move (or harvest ore).
                         int tu = -1, ts = -1;
+                        bool deployed = false;
                         for (auto it = objects.rbegin(); it != objects.rend(); ++it) {
                             if (wx < it->x || wx >= it->x + it->shp->width ||
                                 wy < it->y || wy >= it->y + it->shp->height)
                                 continue;
                             if (it->unitId >= 0) {
                                 const auto* u = sim.findUnit(it->unitId);
+                                if (u && u->house == playerHouse && u->selected &&
+                                    u->type == "mcv") {
+                                    int fw = 0, fh = 0;
+                                    int mcvCell = u->cell();
+                                    if (structFootprint("fact", fw, fh)) {
+                                        int sid = sim.deployMcv(u->id, fw, fh);
+                                        if (sid >= 0)
+                                            addStructDrawable("fact", playerHouse,
+                                                              mcvCell - 1 - kSize, sid);
+                                    }
+                                    deployed = true;
+                                    break;
+                                }
                                 if (u && u->house != playerHouse) {
                                     tu = u->id;
                                     break;
@@ -772,8 +1013,8 @@ int main(int argc, char** argv) {
                             }
                         }
                         int cell = cellY * kSize + cellX;
-                        if (ids.empty())
-                            ; // nothing selected
+                        if (ids.empty() || deployed)
+                            ; // nothing selected (or the click deployed an MCV)
                         else if (tu >= 0 || ts >= 0)
                             sim.orderAttack(ids, tu, ts);
                         else if (sim.oreAt(cell) > 0) {
@@ -821,18 +1062,20 @@ int main(int argc, char** argv) {
             float dx = 0, dy = 0;
             if (keys[SDL_SCANCODE_A] || keys[SDL_SCANCODE_LEFT] || mx < kEdge)
                 dx -= 1;
-            if (keys[SDL_SCANCODE_D] || keys[SDL_SCANCODE_RIGHT] || mx >= winW - kEdge)
+            if (keys[SDL_SCANCODE_D] || keys[SDL_SCANCODE_RIGHT] ||
+                (mx < viewW && mx >= viewW - kEdge))
                 dx += 1;
             if (keys[SDL_SCANCODE_W] || keys[SDL_SCANCODE_UP] || my < kEdge)
                 dy -= 1;
             if (keys[SDL_SCANCODE_S] || keys[SDL_SCANCODE_DOWN] || my >= winH - kEdge)
                 dy += 1;
-            camX = std::clamp(camX + dx * kSpeed * dt, 0.0f, float(mapSurf->w - winW));
+            camX = std::clamp(camX + dx * kSpeed * dt, 0.0f, float(mapSurf->w - viewW));
             camY = std::clamp(camY + dy * kSpeed * dt, 0.0f, float(mapSurf->h - winH));
 
             SDL_Surface* wsurf = SDL_GetWindowSurface(win);
-            SDL_Rect src{int(camX), int(camY), winW, winH};
-            SDL_BlitSurface(mapSurf, &src, wsurf, nullptr);
+            SDL_Rect src{int(camX), int(camY), viewW, winH};
+            SDL_Rect dst{0, 0, viewW, winH};
+            SDL_BlitSurface(mapSurf, &src, wsurf, &dst);
 
             game::Canvas wc = game::Canvas::wrap(wsurf);
             objects = buildDrawList(); // positions may have ticked above
@@ -840,6 +1083,46 @@ int main(int argc, char** argv) {
                 drawObject(wc, o, pal, int(camX), int(camY));
             drawEffects(wc, int(camX), int(camY));
             drawShroud(wc, int(camX), int(camY));
+
+            // Placement ghost: footprint outline at the cursor cell.
+            if (!placingType.empty() && mx < viewW) {
+                int cellX = cx0 + (mx + int(camX)) / kTile;
+                int cellY = cy0 + (my + int(camY)) / kTile;
+                bool ok = sim.canPlace(playerHouse, cellY * kSize + cellX,
+                                       placeW, placeH);
+                uint32_t col = ok ? 0xff00ff00 : 0xffff0000;
+                for (int by = 0; by < placeH; by++)
+                    for (int bx = 0; bx < placeW; bx++)
+                        game::drawRect(wc,
+                                       (cellX + bx - cx0) * kTile - int(camX),
+                                       (cellY + by - cy0) * kTile - int(camY),
+                                       kTile, kTile, col);
+            }
+
+            // ---- Sidebar ----
+            game::fillRect(wc, viewW, 0, kSidebarW, winH, 0xff26262e);
+            auto drawStrip = [&](const std::vector<BuildEntry>& list, int col) {
+                for (int i = 0; i < int(list.size()); i++) {
+                    int ex, ey;
+                    entryPos(col, i, ex, ey);
+                    if (ey + kCameoH < 0 || ey >= winH)
+                        continue;
+                    const auto& en = list[i];
+                    blitIndexed(wc, en.icon->frames[0].data(), en.icon->width,
+                                en.icon->height, ex, ey, pal);
+                    const auto* p = sim.production(playerHouse, prodCatOf(en.kind));
+                    if (p && p->type == en.type) {
+                        game::fillRect(wc, ex, ey + kCameoH - 4,
+                                       kCameoW * p->frac256() / 256, 3, 0xffe8e800);
+                        if (p->ready)
+                            game::drawRect(wc, ex, ey, kCameoW, kCameoH,
+                                           placingType.empty() ? 0xff00ff00
+                                                               : 0xffffffff);
+                    }
+                }
+            };
+            drawStrip(buildStructs, 0);
+            drawStrip(buildUnits, 1);
 
             if (dragging && (mstate & SDL_BUTTON_LMASK))
                 game::drawRect(wc, std::min(dragX0, mx), std::min(dragY0, my),
@@ -854,6 +1137,12 @@ int main(int argc, char** argv) {
             }
 
             SDL_UpdateWindowSurface(win);
+            // One-frame screenshot of the real UI (sidebar included).
+            if (const char* shot = strArg(argc, argv, "--ui-shot")) {
+                SDL_SaveBMP(wsurf, shot);
+                std::printf("wrote %s\n", shot);
+                quit = true;
+            }
             SDL_Delay(8);
         }
         SDL_DestroyWindow(win);

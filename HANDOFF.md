@@ -1,89 +1,92 @@
-# Handoff — session 4 → session 5 (written 2026-07-07)
+# Handoff — session 5 → session 6 (written 2026-07-08)
 
-Session 4 completed **all of Phase 5**: weapons/warheads/damage from
-rules.ini, attack orders with turret tracking and homing projectiles,
-explosion/death anims via a sim event stream, attackable sim structures,
-the harvester→refinery→credits loop, and the power model.
+Session 5 completed **all of Phase 6** (production): sidebar with real
+cameos, build queues with drip-paid credits and prerequisite gating,
+structure placement with adjacency, and MCV deploy. Phases 0-6 are done.
 
 ## Read first
 
 1. `MILESTONES.md` — checkboxes + per-phase gotchas are current.
 2. `README.md` — build commands, `game.exe` usage.
-3. Only then source: `src/game/sim.{h,cpp}` (movement + combat + harvest),
-   `src/game/rules.{h,cpp}` (stats/weapons/warheads/economy), and
-   `src/game_main.cpp` (shell: draw lists, events→anims, orders). The
-   formats/render/map/house code is all verified — don't re-read.
+3. Only then source: `src/game/sim.{h,cpp}` (movement/combat/harvest/
+   production), `src/game/rules.{h,cpp}`, `src/game_main.cpp` (shell:
+   sidebar, placement, orders, effects). formats/render/map/house are all
+   verified — don't re-read.
 
 ## Current state
 
 - Compiles clean: `cmake --build build --config Release` (MSVC).
-- Combat: right-click an enemy unit/structure → selected units chase into
-  Range, aim (turret decoupled from hull on 1tnk/2tnk/3tnk/4tnk/jeep), fire
-  on ROF, damage = Damage × Verses[Armor] (COMBAT.CPP Modify_Damage port,
-  MinDamage/MaxDamage clamps). Deaths free occupancy, fire events; the
-  shell plays Combat_Anim-selected SHPs (piff/veh-hit/art-exp/napalm/
-  h2o_exp) and fball1 for vehicle/structure deaths.
-- Economy: right-click ore with a harvester → gathers 1 bail/15 ticks up to
-  BailCount (28), auto-shuttles to nearest friendly `proc`, unloads after 30
-  ticks → credits[house] += bails×GoldValue (gems ×GemValue). Depleted cells
-  rebake to bare terrain. Credits + power in the window title (no FNT font
-  renderer yet).
-- Power: `Sim::power(house)` sums structure Power= (+/-);
-  `Sim::powerFraction` is the Power_Fraction port for Phase 6 production.
-- Sim stays deterministic (verified: identical stdout hashes on repeated
-  1400-tick combat+harvest runs). All verification headless; interactive
-  play still only smoke-tested — worth a real playthrough.
+- Interactive: sidebar on the right (structures | units cameo columns,
+  wheel-scrolls). Click a cameo to build (needs fact/barr|tent/weap);
+  yellow progress bar on the cameo; buildings get a green border when
+  ready — click the cameo again to enter placement (footprint ghost,
+  green/red), right-click in the world cancels placement, right-click the
+  cameo cancels production with refund. Units auto-spawn below their
+  factory. Right-click an own selected MCV to deploy into a fact.
+  `--credits N` (default 3000) seeds the player house.
+- Sim owns all of it deterministically: one production slot per category
+  (Building/Infantry/Vehicle) per house; ticks = Cost × BuildSpeed(0.8) ×
+  900/1000 at full power; credits paid as progress advances (stalls when
+  broke, cancel refunds); low power scales speed by powerFraction with a
+  16/256 floor. Prereqs checked against owned structures (barr↔tent
+  equivalent); weap's prereq is proc.
+- Not yet played eyes-on beyond a one-frame `--ui-shot` screenshot —
+  a real interactive playthrough (build a base, make tanks, fight) is the
+  best first move next session.
 
-## Next task: Phase 6 (production) or Phase 9 (map editor)
+## Next task: Phase 7 (AI & missions) or Phase 9 (map editor)
 
-Phase 6 suggested order: sidebar cameo strip (SHP cameos exist in conquer,
-e.g. 1tnkicon.shp) → build queue with cost/time (BuildSpeed, scaled by
-powerFraction) → prerequisites (Prerequisite= in rules.ini) → structure
-placement (adjacency + passability) + MCV deploy. Spending hits the credits
-map that harvesting already fills.
+Phase 7 order suggestion: unit auto-acquire (fire at enemies in range
+without orders — combat already supports targets, just needs a scan) →
+skirmish AI (build order from the production API + attack waves) →
+triggers/teamtypes for missions. Auto-acquire is also the quickest win for
+making fights feel real.
 
 ## Gotchas not in MILESTONES.md
 
-- Sim units die by erase-remove at end of `Sim::tick()`; anything holding a
-  `Unit*`/`Structure*` across a tick must re-look-up by id (`findUnit`).
-  Projectiles already handle their target dying mid-flight (they fly to the
-  last known spot and detonate on the ground).
-- `orderAttack` targets are (unitId, structId) with the unused one -1.
-  Headless flags: `--attack i,j` `--attack-struct i,structId`
-  `--harvest i,cx,cy` (unit *indices* into the initial list, struct *ids*).
-- Chase repaths when the target strays >2 cells from the stored destCell;
-  if A* returns empty the unit drops the target (prevents repath-spin on
-  unreachable targets).
-- In-range vehicles finish entering a reserved cell before stopping to
-  fire (occupancy stays consistent); infantry stop instantly.
-- The e2 grenade rules section is [Grenade] with Image=BOMB — projectile
-  art draws by facing only if the SHP has ≥32 frames, else frame 0.
-- Harvester "dock" = any cell adjacent to the proc footprint (real RA uses
-  a fixed dock cell + docking animation — revisit in polish).
-- bakeTerrainCell rebakes terrain only: a depleted ore cell under a tree
-  shadow would lose the shadow pixels (rare; ignore until it shows).
-- Water-destination regression (`--move 0,50,79` → 48,77) needs ~1200
-  ticks, not 600 — the handoff recipe under-ran it this session and it
-  looked like a regression for a while.
+- `--build/--place/--deploy` (headless) retry every tick until accepted, so
+  order flags freely: `--deploy 7 --build b,powr --place 35,89` works even
+  though the fact doesn't exist at tick 0. `--place` args are consumed FIFO
+  as buildings become ready. Unit indexes = initial unit list order.
+- `Sim::deployMcv` and unit death **erase** from `units_` — any `Unit*`
+  held across such calls dangles (copy house/cell first; two call sites in
+  game_main already learned this).
+- `startProduction` rejects when: slot busy, cost<=0, missing factory,
+  missing prereq. It does NOT reserve credits — payment is per-progress in
+  `tickProduction`.
+- The sidebar build lists (`kStructTypes/kInfTypes/kVehTypes` in
+  game_main.cpp) are hardcoded candidates filtered by rules Owner/TechLevel
+  and icon art existence. Add types there if something seems missing.
+- Placement validity = every footprint cell `Buildable=` land, unblocked,
+  unoccupied + touching a friendly structure (Adjacent=1 for everything;
+  real RA walls use Adjacent=8).
+- fact footprint comes from fact.shp cell bounds (3×3 on snow); deploy
+  places its top-left one cell up-left of the MCV's cell.
+- `--ui-shot out.bmp` opens the real window for one frame and saves it —
+  the only current way to screenshot the sidebar.
+- Verification runs from session 4 (combat/harvest) now print an extra
+  `house Greece credits 3000` line because of the --credits default; the
+  determinism-hash recipe still works within a version.
 
 ## Verification recipe
 
+Full production chain (scu04eb is a Soviet mission with a starting MCV,
+unit index 7):
+
 ```
-build\Release\game.exe data\assets\red_alert\allied\MAIN\general\scg01ea.ini ^
-    data\assets\red_alert\allied --sim-ticks 1400 --no-shroud ^
-    --attack 0,13 --harvest 1,76,48
+build\Release\game.exe data\assets\red_alert\allied\MAIN\general\scu04eb.ini ^
+  data\assets\red_alert\allied --house USSR --no-shroud --sim-ticks 5000 ^
+  --deploy 7 --credits 10000 --build b,powr --build b,barr --build b,proc ^
+  --build b,weap --build i,e1 --build v,3tnk ^
+  --place 35,89 --place 35,92 --place 29,89 --place 29,92
 ```
 
-- unit 13 (e1 at 62,55) dies ~tick 85 (4 × 15 dmg from jeep M60mg).
-- "ore depleted" lines appear (~ticks 440-750), then
-  `house USSR credits 700 power 700/690` (28 bails × GoldValue 25).
-- `--attack-struct 3,0` → tesla hp falls 400→334 over 600 ticks (3/shot =
-  15 × 25% SA-vs-heavy).
-- Repeat a run → identical stdout (determinism).
-- Visual: `--dump out.bmp` right after a death tick shows fball1; the
-  harvested field shows bare snow where ore was.
-- Interactive: select jeeps, right-click Soviet infantry → chase/kill;
-  right-click ore with the harvester; watch title-bar credits climb.
+Expect: deploy tick 0; powr placed tick 216 (300×0.72); barr 433; proc
+1874; weap 3315 (2000-cost = 1440 ticks each); "started building e1" right
+after barr and a USSR e1 appears near 36,94; 3tnk starts after weap and
+spawns near 30,94; final line `house USSR credits 4350 power 100/80`.
+Combat/harvest recipes: see session-4 notes in MILESTONES + `--attack`,
+`--harvest` flags (jeep kills e1 in 4 shots; harvest round trip = 700).
 
 ## Context handoff protocol
 

@@ -128,9 +128,29 @@ InfDeath sequences, ore re-adjacency on neighbor depletion (frames stay).
 
 ## Phase 6 — Production
 
-- [ ] Sidebar UI (build strip, tabs, cameos)
-- [ ] Build queues, prerequisites tree, cost/time
-- [ ] Structure placement (adjacency rules) + MCV deploy
+- [x] Sidebar UI (two cameo columns: structures | units, `<type>icon.shp`
+      from hires; wheel scroll, click to build, click-when-ready to place,
+      right-click cancels+refunds; progress bar + ready border on the cameo)
+      (2026-07-08)
+- [x] Build queues, prerequisites tree, cost/time (one item per category —
+      Building/Infantry/Vehicle; ticks = Cost × BuildSpeed×900/1000 at full
+      power; credits drip-paid with progress, stall when broke; Prerequisite=
+      checked against owned structures, barr↔tent interchangeable; producing
+      factory fact/barr|tent/weap is an implicit prereq; low power slows via
+      powerFraction with a 16/256 floor) (2026-07-08)
+- [x] Structure placement (footprint buildable+free per land Buildable=,
+      must touch friendly structure) + MCV deploy (right-click own selected
+      MCV → fact, footprint one cell up-left) (2026-07-08)
+
+Gotchas learned: cameo art is `<type>icon.shp` (64×48) in **hires**, game
+palette. weap's Prerequisite is proc (not just fact) — the tech chain is
+fact→powr→barr/proc→weap. Sidebar candidate type lists are hardcoded (the
+original defines type lists in code too). Headless `--build/--place/--deploy`
+retry every tick, so chains like deploy→powr→barr resolve naturally; unit
+indexes in flags refer to the initial unit list. Not yet done: batch/queued
+items per category, ship production (syrd/spen), buildup anims
+(`<type>make.shp`), bib drawing under buildings, greying unavailable cameos,
+per-cell placement validity coloring, silo storage caps, selling/repair.
 
 ## Phase 7 — AI & missions
 
@@ -221,3 +241,15 @@ carries the delta. Update this file's checkboxes *before* writing a handoff.
   determinism confirmed (identical run hashes). Movement regressions pass
   (55,75 exact; water order settles 48,77). Next: Phase 6 (production) or
   Phase 9 (map editor); infantry death anims + auto-acquire are known gaps.
+- **2026-07-08 (session 5): Phase 6 complete.** Production stats in rules
+  (Cost/TechLevel/Owner/Prerequisite/BuildSpeed/land Buildable=), sim
+  production slots with drip payment + power scaling, prereq tree,
+  unit spawn at factory, canPlace/placeBuilding adjacency, deployMcv;
+  shell sidebar (cameo strips, progress bars, place-on-ready, cancel),
+  placement ghost, right-click MCV deploy, `--credits/--tech/--build/
+  --place/--deploy/--ui-shot` flags. Verified headlessly on scu04eb
+  (USSR): MCV→fact at tick 0, powr done tick 216 (=300×0.72 exactly),
+  full chain fact→powr→barr→proc→weap gates correctly (weap needs proc),
+  e1 and 3tnk spawn below their factories, credits 10000→4350 exact,
+  power 100/80; sidebar screenshot eyeballed (correct Soviet cameo set).
+  Next: Phase 7 (AI & missions) or Phase 9 (map editor).

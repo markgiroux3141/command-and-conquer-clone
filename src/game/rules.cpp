@@ -28,6 +28,14 @@ Armor armorFromName(const std::string& s) {
 }
 } // namespace
 
+bool hasTurretArt(const std::string& type) {
+    static const char* kTurreted[] = {"1tnk", "2tnk", "3tnk", "4tnk", "jeep"};
+    for (const char* t : kTurreted)
+        if (type == t)
+            return true;
+    return false;
+}
+
 Land landFromControl(uint8_t control) {
     // TemplateTypeClass::Land_Type (CDATA.CPP) lookup table.
     static const Land kTable[16] = {
@@ -58,12 +66,17 @@ Rules Rules::load(const std::string& rulesIniPath) {
             // Values look like "90%"; getInt's atoi stops at the '%'.
             r.landSpeed_[l][s] = r.ini_.getInt(kLandSections[l], kSpeedKeys[s], 0);
         }
+        std::string b = r.ini_.get(kLandSections[l], "Buildable", "no");
+        r.landBuildable_[l] = !b.empty() && (b[0] == 'y' || b[0] == 'Y' ||
+                                             b[0] == 't' || b[0] == '1');
     }
     r.minDamage_ = r.ini_.getInt("General", "MinDamage", 1);
     r.maxDamage_ = r.ini_.getInt("General", "MaxDamage", 1000);
     r.goldValue_ = r.ini_.getInt("General", "GoldValue", 25);
     r.gemValue_ = r.ini_.getInt("General", "GemValue", 50);
     r.bailCount_ = r.ini_.getInt("General", "BailCount", 28);
+    r.buildSpeed_ = std::strtod(r.ini_.get("General", "BuildSpeed", "0.8").c_str(),
+                                nullptr);
     return r;
 }
 
@@ -168,6 +181,10 @@ const UnitStats& Rules::unit(const std::string& type, UnitKind kind) const {
         s.rot = ini_.getInt(type, "ROT", s.rot);
         s.sight = ini_.getInt(type, "Sight", s.sight);
         s.power = ini_.getInt(type, "Power", 0);
+        s.cost = ini_.getInt(type, "Cost", 0);
+        s.techLevel = ini_.getInt(type, "TechLevel", -1);
+        s.owner = ini_.get(type, "Owner", "");
+        s.prereq = ini_.get(type, "Prerequisite", "");
         s.armor = armorFromName(ini_.get(type, "Armor", ""));
         std::string primary = ini_.get(type, "Primary", "");
         if (!primary.empty() && primary != "none")

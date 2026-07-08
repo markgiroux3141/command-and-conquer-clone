@@ -427,8 +427,241 @@ void Sim::tickHarvest(Unit& u) {
     }
 }
 
+namespace {
+Sim::ProdCat catOf(UnitKind kind) {
+    switch (kind) {
+    case UnitKind::Structure: return Sim::ProdCat::Building;
+    case UnitKind::Infantry:  return Sim::ProdCat::Infantry;
+    default:                  return Sim::ProdCat::Vehicle;
+    }
+}
+} // namespace
+
+bool Sim::prereqsMet(const std::string& house, const std::string& prereq) const {
+    const char* p = prereq.c_str();
+    while (*p) {
+        const char* comma = std::strchr(p, ',');
+        std::string need = comma ? std::string(p, comma - p) : std::string(p);
+        bool found = false;
+        for (const auto& s : structures_) {
+            if (s.house != house)
+                continue;
+            if (s.type == need ||
+                // Barracks flag: barr and tent are interchangeable.
+                ((need == "barr" || need == "tent") &&
+                 (s.type == "barr" || s.type == "tent"))) {
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+            return false;
+        if (!comma)
+            break;
+        p = comma + 1;
+    }
+    return true;
+}
+
+bool Sim::startProduction(const std::string& house, const std::string& type,
+                          UnitKind kind) {
+    Production& slot = prod_[house].slot[size_t(catOf(kind))];
+    if (slot.active())
+        return false;
+    const UnitStats& stats = rules_->unit(type, kind);
+    if (stats.cost <= 0)
+        return false;
+    // The producing factory itself is an implicit prerequisite.
+    std::string factory = kind == UnitKind::Structure ? "fact"
+                          : kind == UnitKind::Infantry ? "barr" : "weap";
+    if (!prereqsMet(house, factory) || !prereqsMet(house, stats.prereq))
+        return false;
+    slot.type = type;
+    slot.kind = kind;
+    slot.cost = stats.cost;
+    slot.ticksTotal = rules_->buildTicks(stats.cost);
+    slot.progress = slot.paid = slot.powAcc = 0;
+    slot.ready = false;
+    return true;
+}
+
+const Sim::Production* Sim::production(const std::string& house, ProdCat cat) const {
+    auto it = prod_.find(house);
+    if (it == prod_.end())
+        return nullptr;
+    const Production& p = it->second.slot[size_t(cat)];
+    return p.active() ? &p : nullptr;
+}
+
+void Sim::cancelProduction(const std::string& house, ProdCat cat) {
+    auto it = prod_.find(house);
+    if (it == prod_.end())
+        return;
+    Production& p = it->second.slot[size_t(cat)];
+    if (!p.active())
+        return;
+    credits_[house] += p.paid;
+    p = Production{};
+}
+
+bool Sim::canPlace(const std::string& house, int cell, int w, int h) const {
+    int cx = cell % kSize, cy = cell / kSize;
+    if (cx < 0 || cy < 0 || cx + w > kSize || cy + h > kSize)
+        return false;
+    for (int by = 0; by < h; by++)
+        for (int bx = 0; bx < w; bx++) {
+            int c = (cy + by) * kSize + cx + bx;
+            if (blocked_[c] || occupant_[c] != -1 ||
+                !rules_->landBuildable(land_[c]))
+                return false;
+        }
+    // Must touch a friendly structure (Adjacent=1 approximation): footprints
+    // [cx, cx+w) and [sx-1, sx+s.w+1) must overlap, same for rows.
+    for (const auto& s : structures_) {
+        if (s.house != house)
+            continue;
+        int sx = s.cell % kSize, sy = s.cell / kSize;
+        if (cx <= sx + s.w && cx + w >= sx && cy <= sy + s.h && cy + h >= sy)
+            return true;
+    }
+    return false;
+}
+
+int Sim::placeBuilding(const std::string& house, int cell, int w, int h) {
+    Production& slot = prod_[house].slot[size_t(ProdCat::Building)];
+    if (!slot.active() || !slot.ready || !canPlace(house, cell, w, h))
+        return -1;
+    Structure st;
+    st.type = slot.type;
+    st.house = house;
+    st.cell = cell;
+    st.w = w;
+    st.h = h;
+    st.stats = rules_->unit(slot.type, UnitKind::Structure);
+    st.hp = st.stats.strength;
+    slot = Production{};
+    return addStructure(std::move(st));
+}
+
+int Sim::deployMcv(int unitId, int w, int h) {
+    Unit* u = mutableUnit(unitId);
+    if (!u || u->type != "mcv" || u->moving())
+        return -1;
+    int cx = u->cell() % kSize - 1, cy = u->cell() / kSize - 1;
+    if (cx < 0 || cy < 0 || cx + w > kSize || cy + h > kSize)
+        return -1;
+    for (int by = 0; by < h; by++)
+        for (int bx = 0; bx < w; bx++) {
+            int c = (cy + by) * kSize + cx + bx;
+            if (blocked_[c] ||
+                (occupant_[c] != -1 && occupant_[c] != u->id) ||
+                !rules_->landBuildable(land_[c]))
+                return -1;
+        }
+    // Consume the MCV silently (no death event/explosion).
+    std::string house = u->house;
+    int id = u->id;
+    if (u->occCell >= 0 && occupant_[u->occCell] == u->id)
+        occupant_[u->occCell] = -1;
+    if (u->reservedCell >= 0 && occupant_[u->reservedCell] == u->id)
+        occupant_[u->reservedCell] = -1;
+    units_.erase(std::remove_if(units_.begin(), units_.end(),
+                                [&](const Unit& v) { return v.id == id; }),
+                 units_.end());
+    Structure st;
+    st.type = "fact";
+    st.house = std::move(house);
+    st.cell = cy * kSize + cx;
+    st.w = w;
+    st.h = h;
+    st.stats = rules_->unit("fact", UnitKind::Structure);
+    st.hp = st.stats.strength;
+    return addStructure(std::move(st));
+}
+
+bool Sim::spawnProduced(const std::string& house, const Production& p) {
+    // Find the producing factory.
+    const Structure* fac = nullptr;
+    for (const auto& s : structures_) {
+        if (s.house != house)
+            continue;
+        if (p.kind == UnitKind::Infantry ? (s.type == "barr" || s.type == "tent")
+                                         : s.type == "weap") {
+            fac = &s;
+            break;
+        }
+    }
+    if (!fac)
+        return false;
+    Unit u;
+    u.type = p.type;
+    u.house = house;
+    u.infantry = p.kind == UnitKind::Infantry;
+    u.stats = rules_->unit(p.type, p.kind);
+    u.turreted = hasTurretArt(p.type);
+    u.harvester = p.type == "harv";
+    u.facing = 128; // exit facing south
+    // Spiral for a free cell around the factory footprint.
+    int fx = fac->cell % kSize + fac->w / 2, fy = fac->cell / kSize + fac->h;
+    for (int r = 0; r < 6; r++) {
+        for (int dy = -r; dy <= r; dy++) {
+            for (int dx = -r; dx <= r; dx++) {
+                if (std::max(std::abs(dx), std::abs(dy)) != r)
+                    continue;
+                int x = fx + dx, y = fy + dy;
+                if (x < 0 || x >= kSize || y < 0 || y >= kSize)
+                    continue;
+                int c = y * kSize + x;
+                if (!passable(c, u.stats.speedClass))
+                    continue;
+                if (!u.infantry && occupant_[c] != -1)
+                    continue;
+                addUnit(std::move(u), c);
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+void Sim::tickProduction() {
+    for (auto& [house, hp] : prod_) {
+        for (auto& slot : hp.slot) {
+            if (!slot.active())
+                continue;
+            if (slot.ready) {
+                // Finished units wait here until the factory has room;
+                // buildings wait for the player to place them.
+                if (slot.kind != UnitKind::Structure && spawnProduced(house, slot))
+                    slot = Production{};
+                continue;
+            }
+            // Low power slows production but never stops it entirely.
+            slot.powAcc = std::min(slot.powAcc + std::max(16, powerFraction(house)), 512);
+            while (slot.powAcc >= 256 && slot.progress < slot.ticksTotal) {
+                // Pay for this tick of progress before advancing.
+                int nextPaid = slot.cost * (slot.progress + 1) / slot.ticksTotal;
+                int due = nextPaid - slot.paid;
+                auto it = credits_.find(house);
+                int have = it == credits_.end() ? 0 : it->second;
+                if (have < due) {
+                    slot.powAcc = 0; // broke: production stalls
+                    break;
+                }
+                credits_[house] = have - due;
+                slot.paid = nextPaid;
+                slot.progress++;
+                slot.powAcc -= 256;
+            }
+            if (slot.progress >= slot.ticksTotal)
+                slot.ready = true;
+        }
+    }
+}
+
 void Sim::tick() {
     events_.clear();
+    tickProduction();
     for (auto& u : units_) {
         bool wasMoving = u.moving();
         tickUnit(u);

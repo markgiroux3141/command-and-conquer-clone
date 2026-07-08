@@ -83,6 +83,24 @@ public:
         int facing = 0;        // for directional bullet art
     };
 
+    // One sidebar strip each: construction yard, barracks/tent, war factory.
+    enum class ProdCat : uint8_t { Building, Infantry, Vehicle, Count };
+
+    // One in-progress item (per house, per category). Credits are paid as
+    // progress advances (like the original), so cancelling refunds `paid`.
+    struct Production {
+        std::string type;   // empty = slot idle
+        UnitKind kind = UnitKind::Vehicle;
+        int cost = 0;
+        int ticksTotal = 1;
+        int progress = 0;   // 0..ticksTotal
+        int paid = 0;       // credits taken so far
+        int powAcc = 0;     // power-fraction accumulator (256 = 1 tick)
+        bool ready = false; // finished; buildings await placement
+        bool active() const { return !type.empty(); }
+        int frac256() const { return progress * 256 / std::max(1, ticksTotal); }
+    };
+
     // Things that happened during the last tick(); the shell turns these
     // into animations/sound. Cleared at the start of every tick.
     struct Event {
@@ -162,6 +180,30 @@ public:
     // nearest friendly refinery ("proc") indefinitely. Non-harvesters ignore.
     void orderHarvest(const std::vector<int>& ids, int cell);
 
+    // --- production ---
+    void setCredits(const std::string& house, int amount) {
+        credits_[house] = amount;
+    }
+    // Starts building `type` in its category slot. Fails (false) if the slot
+    // is busy, the type has no cost, prerequisites aren't met, or the house
+    // lacks the producing factory (fact/barr|tent/weap).
+    bool startProduction(const std::string& house, const std::string& type,
+                         UnitKind kind);
+    const Production* production(const std::string& house, ProdCat cat) const;
+    // Refunds what has been paid and clears the slot.
+    void cancelProduction(const std::string& house, ProdCat cat);
+    // All Prerequisite= structures present? (barr and tent count as each
+    // other, like the original's shared BARRACKS flag.)
+    bool prereqsMet(const std::string& house, const std::string& prereq) const;
+    // Every footprint cell buildable + free, and touching (Chebyshev 1) a
+    // friendly structure.
+    bool canPlace(const std::string& house, int cell, int w, int h) const;
+    // Places the ready Building-slot structure; returns its id or -1.
+    int placeBuilding(const std::string& house, int cell, int w, int h);
+    // Turns an MCV into a construction yard ("fact", w x h footprint whose
+    // top-left is one cell up-left of the MCV). Returns struct id or -1.
+    int deployMcv(int unitId, int w, int h);
+
     // Advance one tick: rotation, movement, cell hand-over, stuck handling,
     // combat (aim/fire), projectile flight, damage and deaths.
     void tick();
@@ -183,6 +225,11 @@ private:
     void tickHarvest(Unit& u);
     // Nearest cell with ore, spiraling out from `from`; -1 if none.
     int findOre(int from) const;
+    // Advance all houses' production slots (drip pay + power scaling) and
+    // spawn finished units at their factory.
+    void tickProduction();
+    // Spawn a finished unit next to its factory; false if no room yet.
+    bool spawnProduced(const std::string& house, const Production& p);
     void tickProjectiles();
     // Applies weapon damage to whichever target the projectile chased.
     void impact(const Projectile& p);
@@ -200,6 +247,10 @@ private:
     std::vector<uint8_t> oreBails_; // harvestable bails per cell
     std::vector<uint8_t> oreGem_;   // 1 = the cell's ore is gems
     std::unordered_map<std::string, int> credits_;
+    struct HouseProd {
+        Production slot[size_t(ProdCat::Count)];
+    };
+    std::unordered_map<std::string, HouseProd> prod_;
     std::vector<Unit> units_;
     std::vector<Structure> structures_;
     std::vector<Projectile> projectiles_;
