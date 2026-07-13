@@ -152,10 +152,23 @@ palette. weap's Prerequisite is proc (not just fact) — the tech chain is
 fact→powr→barr/proc→weap. Sidebar candidate type lists are hardcoded (the
 original defines type lists in code too). Headless `--build/--place/--deploy`
 retry every tick, so chains like deploy→powr→barr resolve naturally; unit
-indexes in flags refer to the initial unit list. Not yet done: batch/queued
-items per category, ship production (syrd/spen), buildup anims
-(`<type>make.shp`), bib drawing under buildings, greying unavailable cameos,
-per-cell placement validity coloring, silo storage caps, selling/repair.
+indexes in flags refer to the initial unit list.
+**Dynamic sidebar landed 2026-07-13 (session 7):** the sidebar now shows only
+cameos whose prerequisites are met right now (rebuilt each frame from
+`Sim::canProduce`, the shared gate `startProduction` also uses), and darkens
+available-but-unaffordable cameos — like the original, not the whole tech tree
+at once. Fixed TD production factories in the process: infantry spawn from
+`pyle`/`hand` (not `barr`/`tent`) and vehicles from `weap` **or** `afld` (TD
+Nod builds vehicles at the Airstrip) — `isBarracks`/`isWarFactory` groups in
+`prereqsMet` + `spawnProduced`. Verified via `--ui-shot` (GoodGuy base in
+scb03ea shows structures + infantry, no vehicles without a war factory) and
+headless (e1 builds from pyle).
+Not yet done: batch/queued items per category, ship production (syrd/spen),
+buildup anims (`<type>make.shp`), bib drawing under buildings, per-cell
+placement validity coloring, silo storage caps, selling/repair. **The sidebar
+visual chrome (metallic frame, radar/logo box, REPAIR/SELL/MAP + tab buttons,
+and an in-game FNT font for all text) is the remaining piece to truly match the
+original — needs the FNT decoder first (Phase 1 "Later").**
 
 ## Phase 7 — AI & missions
 
@@ -369,7 +382,13 @@ carries the delta. Update this file's checkboxes *before* writing a handoff.
   and unit voice acknowledgements on select/move/attack/build (see Phase 8).
   Built clean, headless sim unchanged/deterministic, interactive smoke-launch
   runs without crashing, all AUD types decode — by-ear check pending on a real
-  run. Known gaps: gunboat still immobile (naval), no win/lose/AI (Phase 7).
+  run. Then, on user request ("get the game looking like the original"),
+  reworked the **sidebar to be dynamic**: shows only cameos whose prerequisites
+  are currently met (via new `Sim::canProduce`) and darkens unaffordable ones,
+  instead of listing the whole tech tree at once. Fixed TD production factories
+  found along the way (infantry ← pyle/hand, vehicles ← weap/afld). Verified
+  with `--ui-shot`. Remaining for full UI fidelity: sidebar frame art + an FNT
+  font for text. Known gaps: gunboat immobile (naval), no win/lose/AI (Phase 7).
 - **2026-07-08 (session 5): Phase 6 complete.** Production stats in rules
   (Cost/TechLevel/Owner/Prerequisite/BuildSpeed/land Buildable=), sim
   production slots with drip payment + power scaling, prereq tree,

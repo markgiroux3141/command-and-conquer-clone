@@ -191,6 +191,12 @@ public:
     // lacks the producing factory (fact/barr|tent/weap).
     bool startProduction(const std::string& house, const std::string& type,
                          UnitKind kind);
+    // Could this house begin `type` right now? True iff it costs something,
+    // the house owns the producing factory (construction yard / barracks /
+    // war factory) and every Prerequisite= structure. Ignores cost-on-hand
+    // and slot state, so it also answers "should the sidebar show this cameo".
+    bool canProduce(const std::string& house, const std::string& type,
+                    UnitKind kind) const;
     const Production* production(const std::string& house, ProdCat cat) const;
     // Refunds what has been paid and clears the slot.
     void cancelProduction(const std::string& house, ProdCat cat);

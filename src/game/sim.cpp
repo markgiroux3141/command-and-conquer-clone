@@ -33,6 +33,16 @@ bool housesEnemy(const std::string& a, const std::string& b) {
         return false;
     return true;
 }
+
+// The "barracks" prerequisite flag: RA's barr/tent and TD's pyle (GDI) / hand
+// (Nod) all satisfy each other, like the original's shared BARRACKS bit.
+bool isBarracks(const std::string& t) {
+    return t == "barr" || t == "tent" || t == "pyle" || t == "hand";
+}
+
+// The vehicle factory: GDI/RA build from the Weapons Factory (weap); TD Nod
+// builds vehicles from the Airstrip (afld). Either satisfies the requirement.
+bool isWarFactory(const std::string& t) { return t == "weap" || t == "afld"; }
 } // namespace
 
 int directionTo(int dx, int dy) {
@@ -502,9 +512,10 @@ bool Sim::prereqsMet(const std::string& house, const std::string& prereq) const 
             if (s.house != house)
                 continue;
             if (s.type == need ||
-                // Barracks flag: barr and tent are interchangeable.
-                ((need == "barr" || need == "tent") &&
-                 (s.type == "barr" || s.type == "tent"))) {
+                // Barracks/war-factory flags: the interchangeable buildings
+                // (barr/tent/pyle/hand and weap/afld) satisfy each other.
+                (isBarracks(need) && isBarracks(s.type)) ||
+                (isWarFactory(need) && isWarFactory(s.type))) {
                 found = true;
                 break;
             }
@@ -518,19 +529,23 @@ bool Sim::prereqsMet(const std::string& house, const std::string& prereq) const 
     return true;
 }
 
-bool Sim::startProduction(const std::string& house, const std::string& type,
-                          UnitKind kind) {
-    Production& slot = prod_[house].slot[size_t(catOf(kind))];
-    if (slot.active())
-        return false;
-    const UnitStats& stats = rules_->unit(type, kind);
-    if (stats.cost <= 0)
+bool Sim::canProduce(const std::string& house, const std::string& type,
+                     UnitKind kind) const {
+    if (!rules_ || rules_->unit(type, kind).cost <= 0)
         return false;
     // The producing factory itself is an implicit prerequisite.
     std::string factory = kind == UnitKind::Structure ? "fact"
                           : kind == UnitKind::Infantry ? "barr" : "weap";
-    if (!prereqsMet(house, factory) || !prereqsMet(house, stats.prereq))
+    return prereqsMet(house, factory) &&
+           prereqsMet(house, rules_->unit(type, kind).prereq);
+}
+
+bool Sim::startProduction(const std::string& house, const std::string& type,
+                          UnitKind kind) {
+    Production& slot = prod_[house].slot[size_t(catOf(kind))];
+    if (slot.active() || !canProduce(house, type, kind))
         return false;
+    const UnitStats& stats = rules_->unit(type, kind);
     slot.type = type;
     slot.kind = kind;
     slot.cost = stats.cost;
@@ -640,8 +655,8 @@ bool Sim::spawnProduced(const std::string& house, const Production& p) {
     for (const auto& s : structures_) {
         if (s.house != house)
             continue;
-        if (p.kind == UnitKind::Infantry ? (s.type == "barr" || s.type == "tent")
-                                         : s.type == "weap") {
+        if (p.kind == UnitKind::Infantry ? isBarracks(s.type)
+                                         : isWarFactory(s.type)) {
             fac = &s;
             break;
         }

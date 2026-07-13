@@ -984,6 +984,10 @@ int main(int argc, char** argv) {
         std::string placingType; // building awaiting placement (ghost follows mouse)
         int placeW = 0, placeH = 0;
         int sideScroll = 0;
+        // Cameos actually on the sidebar: the candidates whose prerequisites are
+        // met right now (rebuilt each frame, like the original's StripClass).
+        // Pointers into the stable buildStructs/buildUnits candidate lists.
+        std::vector<const BuildEntry*> visStructs, visUnits;
         auto entryPos = [&](int col, int idx, int& x, int& y) {
             x = viewW + 4 + col * (kCameoW + 4);
             y = 4 + idx * (kCameoH + 4) - sideScroll;
@@ -995,7 +999,7 @@ int main(int argc, char** argv) {
             int col = (hx - viewW - 4) / (kCameoW + 4);
             if (col > 1 || hx >= viewW + 4 + col * (kCameoW + 4) + kCameoW)
                 return nullptr;
-            const auto& list = col == 0 ? buildStructs : buildUnits;
+            const auto& list = col == 0 ? visStructs : visUnits;
             int idx = (hy - 4 + sideScroll) / (kCameoH + 4);
             if (idx < 0 || idx >= int(list.size()))
                 return nullptr;
@@ -1003,7 +1007,7 @@ int main(int argc, char** argv) {
             entryPos(col, idx, ex, ey);
             if (hy < ey || hy >= ey + kCameoH)
                 return nullptr;
-            return &list[idx];
+            return list[idx];
         };
         auto prodCatOf = [](game::UnitKind kind) {
             return kind == game::UnitKind::Structure ? game::Sim::ProdCat::Building
@@ -1019,6 +1023,17 @@ int main(int argc, char** argv) {
             uint32_t mstate = SDL_GetMouseState(&mx, &my);
             auto objects = buildDrawList();
 
+            // Only show cameos whose prerequisites are currently met (the
+            // sidebar reflects your base, not the whole tech tree at once).
+            visStructs.clear();
+            visUnits.clear();
+            for (const auto& en : buildStructs)
+                if (sim.canProduce(playerHouse, en.type, en.kind))
+                    visStructs.push_back(&en);
+            for (const auto& en : buildUnits)
+                if (sim.canProduce(playerHouse, en.type, en.kind))
+                    visUnits.push_back(&en);
+
             SDL_Event e;
             while (SDL_PollEvent(&e)) {
                 if (e.type == SDL_QUIT)
@@ -1030,7 +1045,7 @@ int main(int argc, char** argv) {
                         quit = true;
                 }
                 if (e.type == SDL_MOUSEWHEEL && mx >= viewW) {
-                    int rows = int(std::max(buildStructs.size(), buildUnits.size()));
+                    int rows = int(std::max(visStructs.size(), visUnits.size()));
                     int maxScroll =
                         std::max(0, rows * (kCameoH + 4) + 8 - winH);
                     sideScroll = std::clamp(sideScroll - e.wheel.y * (kCameoH + 4),
@@ -1288,17 +1303,31 @@ int main(int argc, char** argv) {
 
             // ---- Sidebar ----
             game::fillRect(wc, viewW, 0, kSidebarW, winH, 0xff26262e);
-            auto drawStrip = [&](const std::vector<BuildEntry>& list, int col) {
+            // Halve a region's brightness (like the SHP shadow table) to mark
+            // an available-but-unaffordable cameo.
+            auto darken = [&](int x0, int y0, int w, int h) {
+                for (int yy = std::max(0, y0); yy < std::min(winH, y0 + h); yy++)
+                    for (int xx = std::max(0, x0); xx < std::min(wc.w, x0 + w); xx++) {
+                        uint32_t px = wc.px[yy * wc.pitch + xx];
+                        wc.px[yy * wc.pitch + xx] = 0xff000000 | ((px >> 1) & 0x7f7f7f);
+                    }
+            };
+            auto drawStrip = [&](const std::vector<const BuildEntry*>& list, int col) {
                 for (int i = 0; i < int(list.size()); i++) {
                     int ex, ey;
                     entryPos(col, i, ex, ey);
                     if (ey + kCameoH < 0 || ey >= winH)
                         continue;
-                    const auto& en = list[i];
+                    const auto& en = *list[i];
                     blitIndexed(wc, en.icon->frames[0].data(), en.icon->width,
                                 en.icon->height, ex, ey, pal);
                     const auto* p = sim.production(playerHouse, prodCatOf(en.kind));
-                    if (p && p->type == en.type) {
+                    bool building = p && p->type == en.type;
+                    // Darken cameos you can't yet afford (unless already building).
+                    if (!building &&
+                        sim.credits(playerHouse) < rules.unit(en.type, en.kind).cost)
+                        darken(ex, ey, kCameoW, kCameoH);
+                    if (building) {
                         game::fillRect(wc, ex, ey + kCameoH - 4,
                                        kCameoW * p->frac256() / 256, 3, 0xffe8e800);
                         if (p->ready)
@@ -1308,8 +1337,8 @@ int main(int argc, char** argv) {
                     }
                 }
             };
-            drawStrip(buildStructs, 0);
-            drawStrip(buildUnits, 1);
+            drawStrip(visStructs, 0);
+            drawStrip(visUnits, 1);
 
             if (dragging && (mstate & SDL_BUTTON_LMASK))
                 game::drawRect(wc, std::min(dragX0, mx), std::min(dragY0, my),

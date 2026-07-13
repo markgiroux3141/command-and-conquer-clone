@@ -32,17 +32,29 @@ music jukebox)**. All build clean and the headless sim is unchanged/deterministi
   `Report=`, impacts, deaths, building crumble) + a SCORES music jukebox + EVA
   computer lines and unit voice acknowledgements (select/move/attack/build).
   Silent+no-op if no audio device.
+- **Sidebar is now dynamic** (session 7): shows only cameos whose prerequisites
+  are currently met (`Sim::canProduce`, rebuilt each frame into `visStructs`/
+  `visUnits`) and darkens unaffordable ones — no longer the whole tech tree at
+  once. But it's still a flat dark panel with bare cameos: **no frame art, no
+  radar/logo box, no REPAIR/SELL/MAP or tab buttons, no text** (credits are in
+  the window title). That chrome is the remaining UI-fidelity work.
 - Still a sandbox: no win/lose, no AI/base-building, no mission triggers.
   Gunboat is immobile (naval needs a contiguous water region).
 
 ## Next tasks (suggested order)
 
-1. **Win/lose + a beatable mission** (Phase 7 start): simplest is
-   destroy-all-structures / lose-when-you-have-none; then read the mission INI
-   `[Triggers]`/`[TeamTypes]` for real objectives. Pairs well with a minimal
-   skirmish AI (build order + attack waves) so the placed-but-passive enemy
-   actually does something beyond return fire.
-2. **Polish**: TD tiberium density/adjacency frames (currently frame 0 only) +
+1. **UI fidelity — the user's current goal ("look like the original")**. The
+   linchpin is an **FNT font decoder** (Phase 1 "Later"): once text renders,
+   the whole HUD becomes possible — credits/power readout, the "OPTIONS |
+   credits | SIDEBAR" tab bar, REPAIR/SELL/MAP buttons, cameo cost/name labels,
+   the "<name> $<cost>" placement label, unit health text. Then the sidebar
+   frame art (the metallic panel + cameo bezels) and the faction radar/logo box
+   at the top (GDI eagle / Nod). Verify each with `--ui-shot` → convert BMP→PNG
+   (PIL) → Read the PNG. The dynamic-cameo logic is already done; this is chrome.
+2. **Win/lose + a beatable mission** (Phase 7): destroy-all-structures /
+   lose-when-you-have-none; then mission INI `[Triggers]`/`[TeamTypes]`. Pairs
+   with a minimal skirmish AI (build order + attack waves).
+3. **Polish**: TD tiberium density/adjacency frames (currently frame 0 only) +
    real harvest density; gunboat/naval water pathing; muzzle-flash anims; sound
    fade/pan by on-screen distance; more EVA cues (low power, base under attack).
 
