@@ -125,6 +125,11 @@ footprint still SHP cell bounds). Not yet done: auto-acquire (units only
 fire when ordered), defensive structures firing back, splash damage to
 nearby objects, Burst=/secondary weapons, muzzle-flash Anim=, infantry
 InfDeath sequences, ore re-adjacency on neighbor depletion (frames stay).
+**Auto-acquire landed 2026-07-13** (Phase 10 session 7): idle armed units
+scan for the nearest enemy in weapon range each tick and fire without orders
+(`Sim::tickAutoAcquire`); a `Unit::autoTarget` flag holds guarding units at
+their post (they drop the target when it leaves range instead of chasing,
+unlike a player-ordered attack). A move order now cancels any attack.
 
 ## Phase 6 — Production
 
@@ -160,8 +165,17 @@ per-cell placement validity coloring, silo storage caps, selling/repair.
 
 ## Phase 8 — Audio & polish
 
-- [ ] SFX + EVA voice playback wired to events
-- [ ] Music jukebox (scores)
+- [x] **SFX wired to sim events** (2026-07-13, session 7): new SDL mixer
+      (`src/game/audio.{h,cpp}`) decodes AUDs → device-rate mono s16, resamples,
+      and mixes N one-shot effects + one music track on the audio callback
+      thread (device-lock guarded; silent + no-op if the device won't open, so
+      headless runs are unaffected). A new sim `Event::Fire` (weapon report) +
+      `Impact`/`UnitDied`/`StructDied` drive SFX in `processEvents`. Fire sounds
+      are data-driven: `Report=` per weapon in `td_rules.ini` → `WeaponStats`.
+- [x] **Music jukebox** (scores): the render loop starts the next SCORES track
+      when the current one ends (playlist aoi/ccthang/ind/ind2/fwp/heavyg).
+- [ ] EVA voice lines (ackno/affirm/etc. — `.v00-.v03` variants), sound
+      fade/pan by distance, per-unit acknowledgement on select/move.
 - [ ] Main menu, in-game options, save/load
 
 ## Phase 9 — Map editor (side quest; can start any time after Phase 4)
@@ -226,10 +240,16 @@ divergences are the work.
       `<type>icon.shp`). Verified headless on scg01ea: MCV pathfinds/moves, GDI
       e1 chases + shoots Nod e1 (50→35hp, M16 SA), gun turrets are attackable
       sim structures; --ui-shot shows the desert Nod base + populated sidebar.
+- [x] **TD passability** (2026-07-13, session 7): the template table now carries
+      per-template `land` + a per-icon `altLand`/`altIcons` exception list
+      (`gen_td_template_table.py` parses ctor args 5/8 + the `_slope*` lists;
+      TD `LandType` 0-6 == `game::Land` 0-6, Tiberium→Ore). `bakeTerrainCell`
+      sets per-cell land from it for TD (mirrors RA's control-map path;
+      CELL.CPP `Land_Type()` alt-icon logic). Verified: MCV/units ordered onto
+      water stop at the shore (clamp to nearest land), cross-map land paths
+      still work. (Gunboat still immobile — naval needs a contiguous water
+      region; its start cell sits in a tiny inlet. Pre-existing, not regressed.)
 - [ ] Polish/known gaps (not blocking play):
-      - Passability defaults to Clear (units cross water/rock). Fix: emit TD
-        template Land= in the template table (TD LandType order == our Land) and
-        set per-cell land in bake, like RA's control-map path.
       - TD tiberium overlay draws frame 0 only (no density/adjacency frames);
         harvest uses a flat BailCount.
       - td_rules.ini is a compact hand-port; refine values / add missing
@@ -326,6 +346,21 @@ carries the delta. Update this file's checkboxes *before* writing a handoff.
   user confirmed it runs. `play.bat` now launches TD (auto-detects disc).
   Sandbox-level: no enemy AI/return-fire, no win/lose, no audio, passability
   defaults to Clear. Next: enemy auto-acquire, TD passability, audio (Phase 8).
+- **2026-07-13 (session 7): auto-acquire + TD passability + audio.** Three
+  gameplay gaps closed. (1) **Auto-acquire/return-fire** (`Sim::tickAutoAcquire`,
+  `Unit::autoTarget`): idle armed units lock onto the nearest enemy in weapon
+  range and fire without orders; guarding units hold their post (drop the target
+  when it leaves range) while player-ordered attacks still chase; a move order
+  cancels the attack. Verified headless both ways (idle Nod mob kills a moving
+  GDI e1; a GDI e1 that goes idle in range shoots Nod e1 50→35). (2) **TD
+  passability**: the template table now carries per-template `land` + per-icon
+  `altLand`/`altIcons` (generator parses ctor args 5/8 + `_slope*` lists);
+  `bakeTerrainCell` sets per-cell land for TD. Verified: MCV/units ordered onto
+  water clamp to the shore; land paths still cross the map. (3) **Audio**: SDL
+  mixer + combat SFX + score jukebox (see Phase 8). Built clean, headless sim
+  unchanged/deterministic, interactive smoke-launch runs without crashing —
+  by-ear check pending on a real run. Known gaps: gunboat still immobile
+  (naval), EVA voices not wired, no win/lose/AI.
 - **2026-07-08 (session 5): Phase 6 complete.** Production stats in rules
   (Cost/TechLevel/Owner/Prerequisite/BuildSpeed/land Buildable=), sim
   production slots with drip payment + power scaling, prereq tree,

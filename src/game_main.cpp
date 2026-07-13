@@ -30,6 +30,7 @@
 #include "formats/shp.h"
 #include "formats/shpd2.h"
 #include "formats/tmp.h"
+#include "game/audio.h"
 #include "game/house.h"
 #include "game/map.h"
 #include "game/render.h"
@@ -288,6 +289,12 @@ int main(int argc, char** argv) {
         ArtCache art(theaterDir, conquerDir, hiresDir, map.theaterExt());
         auto rules = game::Rules::load(rulesPath);
 
+        // Sound mixer: opened only for the interactive window (init() below);
+        // stays silent in headless runs, so processEvents()'s SFX are no-ops.
+        game::AudioMixer mixer;
+        mixer.setSoundDir(root + "/SOUNDS");
+        mixer.setMusicDir(root + "/SCORES");
+
         // House->remap: TD builds its remap in code (placeholder band ->
         // per-house block); RA uses PALETTE.CPS. Cached by house name.
         std::unordered_map<std::string, game::RemapTable> tdRemaps;
@@ -363,10 +370,27 @@ int main(int argc, char** argv) {
             }
             blitIndexed(mc, t->tiles[icon].data(), t->tileWidth, t->tileHeight, dx, dy,
                         pal);
-            // Land type from the template's control map (Land_Type()).
-            if (t != clear && icon < int(t->landBytes.size()))
+            // Land type: RA reads the TMP control map; TD TMPs carry none, so
+            // TD looks up the template table (default land, with per-icon
+            // exceptions for shore/slope transitions -- CELL.CPP Land_Type()).
+            if (t == clear)
+                return; // clear-fallback cell stays the default Land::Clear
+            if (isTd) {
+                if (cell.templateId < game::kTdTemplateCount) {
+                    const auto& info = game::kTdTemplateTable[cell.templateId];
+                    game::Land land = game::Land(info.land);
+                    if (info.altIcons)
+                        for (const int8_t* p = info.altIcons; *p != -1; ++p)
+                            if (*p == icon) {
+                                land = game::Land(info.altLand);
+                                break;
+                            }
+                    sim.setLand(mapY * kSize + mapX, land);
+                }
+            } else if (icon < int(t->landBytes.size())) {
                 sim.setLand(mapY * kSize + mapX,
                             game::landFromControl(t->landBytes[icon]));
+            }
         };
         for (int cy = 0; cy < ch; cy++)
             for (int cx = 0; cx < cw; cx++)
@@ -650,6 +674,24 @@ int main(int argc, char** argv) {
                                        }),
                         anims.end());
             for (const auto& ev : sim.events()) {
+                // Sound (no-op unless the interactive mixer is open).
+                switch (ev.type) {
+                case game::Sim::Event::Fire:
+                    mixer.playSound(ev.weapon ? ev.weapon->report : "");
+                    continue; // muzzle report only; no explosion anim
+                case game::Sim::Event::Impact:
+                    if (ev.damage >= 20) // skip machine-gun pitter-patter
+                        mixer.playSound("xplos");
+                    break;
+                case game::Sim::Event::UnitDied:
+                    mixer.playSound(ev.infantry ? "nuyell1" : "xplobig4");
+                    break;
+                case game::Sim::Event::StructDied:
+                    mixer.playSound("crumble");
+                    break;
+                default:
+                    break;
+                }
                 std::string name;
                 if (ev.type == game::Sim::Event::OreDepleted) {
                     bakeTerrainCell(ev.cell % kSize, ev.cell / kSize);
@@ -917,6 +959,14 @@ int main(int argc, char** argv) {
             SDL_ShowCursor(SDL_ENABLE);
         }
 
+        // Audio: open the device and set up a simple score jukebox (each track
+        // plays once; the render loop starts the next when one finishes).
+        if (!mixer.init())
+            std::printf("note: audio unavailable, running silent\n");
+        static const char* kScores[] = {"aoi", "ccthang", "ind",
+                                        "ind2", "fwp", "heavyg"};
+        int musicIdx = 0;
+
         float camX = 0, camY = 0;
         const float kSpeed = 480.0f;
         const int kEdge = 16;
@@ -958,6 +1008,9 @@ int main(int argc, char** argv) {
         };
 
         while (!quit) {
+            // Advance the jukebox when the current track ends.
+            if (mixer.enabled() && !mixer.musicPlaying())
+                mixer.playMusic(kScores[musicIdx++ % (int(sizeof(kScores) / sizeof(kScores[0])))]);
             int mx, my;
             uint32_t mstate = SDL_GetMouseState(&mx, &my);
             auto objects = buildDrawList();

@@ -1,88 +1,100 @@
-# Handoff — session 6 → session 7 (written 2026-07-13)
+# Handoff — session 7 → session 8 (written 2026-07-13)
 
-Session 6 pivoted the engine from Red Alert to the original 1995 **Tiberian
-Dawn** aesthetic (user: "use this version instead") and got it **playable**.
-Phase 10 is well underway; see MILESTONES.md "Phase 10" for the full checklist.
+Session 7 closed the three top gameplay gaps on the Tiberian Dawn build:
+**enemy auto-acquire (return fire)**, **TD passability**, and **audio (SFX +
+music jukebox)**. All build clean and the headless sim is unchanged/deterministic.
 
 ## Read first
 
-1. `MILESTONES.md` — Phase 10 section (done items + the "Polish/known gaps" list
-   is the backlog) and the session-6 log entry.
+1. `MILESTONES.md` — Phase 8 (audio) + Phase 10 (TD) checklists and the
+   session-7 log entry (top of the log).
 2. `README.md` / `play.bat` — how to run.
 3. Then source, only as needed for the next task:
-   - `src/game_main.cpp` — the shell; TD support is an `isTd` branch through the
-     setup (data layout, `templateArt`, `remapFor`), the terrain/overlay bake,
-     build lists, and sides. This is where most TD gameplay work lands.
-   - `src/game/sim.{h,cpp}` — movement/combat/harvest/production (shared RA+TD).
-   - `src/game/map.cpp` (`loadTd`), `src/game/house.cpp` (`tdRemap`),
-     `src/formats/tmp.cpp` (TD branch) — verified, don't re-read unless touching.
+   - `src/game/sim.{h,cpp}` — movement/combat/harvest/production. New this
+     session: `tickAutoAcquire`, `Unit::autoTarget`, `Event::Fire`.
+   - `src/game/audio.{h,cpp}` — the SDL mixer (new).
+   - `src/game_main.cpp` — the shell. Audio is wired here (`mixer`, the SFX
+     switch in `processEvents`, the jukebox in the render loop). TD support is
+     still the `isTd` branch through setup/bake/build-lists.
 
 ## Current state (what compiles / plays)
 
-- Builds clean: `cmake --build build --config Release` (MSVC). Targets:
-  `game_exe`→game.exe, `mapview`, `shpview`, etc.
-- **TD is playable**: `play.bat` (auto-detects disc from map name: scg*→gdi,
-  scb*→nod, scm*→either). Default `play` = GDI mission 1. Select (click/drag),
-  move/attack (right-click), build from the sidebar, deploy MCV, harvest.
-- Renders correct in all three theaters; GDI gold / Nod red house colors.
-- `tools/render_td.py` → `renders/*.png` (gitignored) for eyeballing maps.
-- **It's a sandbox**: enemies are placed but passive (no auto-acquire / no AI),
-  no win/lose, no triggers, no audio. Passability defaults to Clear (units cross
-  water/rock). `td_rules.ini` is a compact hand-port of TD stats.
+- Builds clean: `cmake --build build --config Release` (MSVC). `play.bat` runs
+  GDI mission 1 by default (auto-detects disc from map name).
+- **Auto-acquire**: idle armed units fire at the nearest enemy in weapon range
+  without orders (both RA + TD; `housesEnemy` = different house, neither
+  Neutral). Guarding units hold their post; a *player*-ordered attack still
+  chases; a move order cancels the attack.
+- **TD passability**: ground units no longer cross water/rock — they clamp to
+  the shore. Per-cell land comes from the template table (`land` + per-icon
+  `altLand`/`altIcons`), baked in `bakeTerrainCell`.
+- **Audio**: combat SFX (weapon fire via per-weapon `Report=`, impacts, deaths,
+  building crumble) + a SCORES music jukebox. Silent+no-op if no audio device.
+- Still a sandbox: no win/lose, no AI/base-building, no mission triggers, no EVA
+  voices. Gunboat is immobile (naval needs a contiguous water region).
 
-## Next tasks (suggested order — highest gameplay payoff first)
+## Next tasks (suggested order)
 
-1. **Enemy return-fire (auto-acquire)** — units fire at in-range enemies without
-   orders. Combat already supports targets (`sim.orderAttack`); add a per-tick
-   scan for the nearest enemy in weapon range when a unit is idle. This is the
-   single biggest "feels like a game" win and is the top gap. Applies to RA too.
-2. **TD passability** — stop the water/rock-walking. Emit the template `Land=`
-   into `td_template_table.h` (extend `gen_td_template_table.py`: the 5th ctor
-   arg in CDATA.CPP is `LAND_*`; TD `LandType` order == our `game::Land`), then
-   in `game_main.cpp bakeTerrainCell` set per-cell land from the template land
-   for TD (mirror the RA `landBytes`/`landFromControl` path). mapview too if you
-   want the debug view accurate.
-3. **Audio (Phase 8)** — assets + decoder exist (`src/formats/aud.cpp`, TD
-   `SCORES/`=music, `SOUNDS/`=SFX+EVA). Wire SDL audio: AUD→PCM, play SFX on sim
-   events (fire/impact/death/build), EVA lines, and a music jukebox from SCORES.
-4. **Play-test + refine TD production** (sidebar populates; the build chain uses
-   the shared RA production path — verify prereqs/costs feel right, tune
-   `td_rules.ini`). Then skirmish AI and mission triggers for a beatable mission.
+1. **EVA voices + unit acknowledgements** (finishes Phase 8 audio): play
+   ackno/affirm/movout `.v00-.v03` variants on select/move/attack orders, and
+   EVA lines ("construction complete", "unit ready", "cannot deploy here") on
+   production/placement events. The mixer already supports it — add a
+   `playSound` for the `.v0N` variant files (pick a random variation) and emit
+   the right cue from the command handlers in `game_main.cpp`. **Verify by ear.**
+2. **Win/lose + a beatable mission** (Phase 7 start): simplest is
+   destroy-all-structures / lose-when-you-have-none; then read the mission INI
+   `[Triggers]`/`[TeamTypes]` for real objectives. Pairs well with a minimal
+   skirmish AI (build order + attack waves) so the placed-but-passive enemy
+   actually does something beyond return fire.
+3. **Polish**: TD tiberium density/adjacency frames (currently frame 0 only) +
+   real harvest density; gunboat/naval water pathing; muzzle-flash anims; sound
+   fade/pan by on-screen distance.
 
 ## Gotchas discovered this session (not all in code comments)
 
-- TD template IDs are single **bytes** (RA=u16); `0xff`=clear. TD `.bin` is
-  64×64, 2 bytes/cell (template,icon), interleaved; loaded into the top-left of
-  the 128-grid so sim/render stay 128-wide. Object/overlay cell numbers are
-  64-wide, remapped on load (`map.cpp loadTd`).
-- TD theater **dir** is truncated `TEMPERAT` but the **palette** base is
-  `temperat`; theater art exts are `.des/.tem/.win`.
-- TD **TMP** has no land-control map (RA does) — that's why passability needs
-  the template `Land=` instead (task 2).
-- TD **cameos** (`<type>icon.shp`) ship only on the **Covert Ops** disc, not the
-  base gdi/nod CONQUER. game.exe uses `root/../covert_ops/CONQUER` as the
-  fallback art dir for TD (`hiresDir`). mapview does NOT (doesn't draw cameos).
-- TD house remap: art carries player color in palette band **176–191**; each
-  house remaps it to a CONST.CPP band. GDI=RemapYellow (identity/gold), Nod
-  (BadGuy) we map to **RemapRed** (source default is actually Blue — we chose
-  red per the GDI-gold/Nod-red convention; one-line switch in `house.cpp`).
-  Most TD building art is pre-colored, so house color is a small accent — normal.
-- TD `mouse.shp` is NOT ShpD2 format → cursor load throws, falls back to OS
-  cursor (harmless). A TD-cursor decoder is a nice-to-have.
-- Houses: GoodGuy=GDI, BadGuy=Nod, Neutral=civilian. Side for owner-filtering:
-  GoodGuy→gdi, BadGuy→nod (`game_main.cpp`).
+- **Auto-acquire is range-gated, not chase**: `autoTarget` units drop the
+  target the instant it leaves weapon range (see the `dist > w->range` branch in
+  `tickCombat`) so idle armies don't wander. Player orders set `autoTarget=false`
+  → normal chase. A unit *moving* under orders does NOT auto-fire (correct: plain
+  move ≠ attack-move) — this is why a unit run through a gauntlet dies without
+  shooting back until it goes idle.
+- **TD land = template table, not the TMP** (RA reads the TMP control map; TD
+  TMPs have none). Generator parses `TemplateTypeClass` ctor arg 5 (`Land`) and
+  arg 8 (`AltLand`) + the `_slope*` `AltIcons` exception lists; TD `LandType`
+  0-6 == `game::Land` 0-6 (Tiberium→Ore). CELL.CPP `Land_Type()` = "icon in
+  AltIcons → AltLand, else Land". Overlays (tiberium/walls) override land after
+  the terrain bake, so ordering is fine.
+- **Audio device format**: opened 22050 Hz mono S16; the device may pick another
+  rate (`have.freq`) so everything resamples to `rate_`. AUD format 1 = 8-bit
+  unsigned (→ `(s-128)<<8`), format 99 = 16-bit. Mixing is guarded by
+  `SDL_LockAudioDevice`; cache entries are never freed so `Voice` pcm pointers
+  stay valid. Music plays at 3/8 volume under SFX.
+- **`Event::Fire` is new** — any code iterating `sim.events()` must handle it
+  (the shell `continue`s after playing the report; it has no explosion anim).
+- **Some SFX aren't on the base GDI disc** (toss/hvygun10/turrfir5/gun5); the
+  `Report=` values were swapped for present equivalents (bazook1/tnkfire6/
+  tnkfire3/gun8). Nod disc may differ — missing files just play silent.
+- SFX/music dirs are `<root>/SOUNDS` and `<root>/SCORES` (TD layout). RA would
+  need different paths (degrades silent).
 
 ## Verification recipe
 
 ```
-# Headless movement + combat (should path the MCV and damage the Nod e1):
+# Auto-acquire (headless, both directions): move a GDI e1 to its post in range
+# of Nod e1 with NO attack order; it auto-fires (Nod e1 50->35) and the idle Nod
+# mob returns fire and kills it:
 build\Release\game.exe data\assets\tiberian_dawn\gdi\GENERAL\scg01ea.ini ^
-  data\assets\tiberian_dawn\gdi --house GoodGuy --no-shroud --sim-ticks 400 ^
-  --attack 2,6 --dump out.bmp --scale 2
-# Expect: unit 2 (GDI e1) ends "(attacking)" near unit 6; unit 6 hp 50 -> ~35.
+  data\assets\tiberian_dawn\gdi --house GoodGuy --no-shroud --sim-ticks 240 --move 2,57,48
+# Expect: "unit 6 ... hp 35/50" and unit 2 died ~tick 197.
 
-# Visual set (writes renders/*.png):  python tools/render_td.py
-# Interactive:  play                (or:  play scb03ea BadGuy 5000)
+# Passability: order the (weaponless) MCV onto the boat's water cell; it stops
+# at the shore instead of driving onto water:
+build\Release\game.exe data\assets\tiberian_dawn\gdi\GENERAL\scg01ea.ini ^
+  data\assets\tiberian_dawn\gdi --house GoodGuy --no-shroud --sim-ticks 300 --move 0,53,59
+# Expect: "unit 0 mcv ... cell 51,57" (clamped to land), not 53,59.
+
+# Audio: run interactively (play) and LISTEN — tank/gun fire, explosions on
+# death, and background music from SCORES. Headless is always silent.
 ```
 
 ## Context handoff protocol

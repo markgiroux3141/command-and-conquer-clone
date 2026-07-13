@@ -14,228 +14,267 @@ enum TdTheaterFlags : uint8_t {
 };
 
 struct TdTemplateInfo {
-    const char* name;      // art base name; add theater extension (.des/.tem/.win)
-    uint8_t theaters;      // TdTheaterFlags mask
+    const char* name;         // art base name; add theater ext (.des/.tem/.win)
+    uint8_t theaters;         // TdTheaterFlags mask
+    uint8_t land;             // default game::Land value for the template's icons
+    uint8_t altLand;          // game::Land value for the altIcons exception list
+    const int8_t* altIcons;   // -1-terminated icon indices taking altLand; null=none
 };
+
+// Per-template icon exception lists (TemplateTypeClass AltIcons); the listed
+// icons take altLand, all others take land (CELL.CPP Cell_Class::Land_Type).
+inline constexpr int8_t kTdAlt_slope111111[] = {0, 1, 2, 3, 4, 5, -1};
+inline constexpr int8_t kTdAlt_slope111[] = {0, 1, 2, -1};
+inline constexpr int8_t kTdAlt_slope1001[] = {0, 3, -1};
+inline constexpr int8_t kTdAlt_slope000001001[] = {5, 8, -1};
+inline constexpr int8_t kTdAlt_slope0000001[] = {6, -1};
+inline constexpr int8_t kTdAlt_slope00000011[] = {6, 7, -1};
+inline constexpr int8_t kTdAlt_slope000000101[] = {6, 8, -1};
+inline constexpr int8_t kTdAlt_slope001[] = {2, -1};
+inline constexpr int8_t kTdAlt_slope01[] = {1, -1};
+inline constexpr int8_t kTdAlt_slope1[] = {0, -1};
+inline constexpr int8_t kTdAlt_slope0001[] = {3, -1};
+inline constexpr int8_t kTdAlt_slope000001[] = {5, -1};
+inline constexpr int8_t kTdAlt_slope0111[] = {1, 2, 3, -1};
+inline constexpr int8_t kTdAlt_slope0011[] = {2, 3, -1};
+inline constexpr int8_t kTdAlt_slope11111111[] = {0, 1, 2, 3, 4, 5, 6, 7, -1};
+inline constexpr int8_t kTdAlt_slope111111011[] = {0, 1, 2, 3, 4, 5, 7, 8, -1};
+inline constexpr int8_t kTdAlt_slope00000001[] = {7, -1};
+inline constexpr int8_t kTdAlt_slope001111001[] = {2, 3, 4, 5, 8, -1};
+inline constexpr int8_t kTdAlt_slope111010011[] = {0, 1, 2, 4, 7, 8, -1};
+inline constexpr int8_t kTdAlt_slope00110010010011[] = {2, 3, 6, 9, 12, 13, -1};
+inline constexpr int8_t kTdAlt_slope00110000000011[] = {2, 3, 12, 13, -1};
+inline constexpr int8_t kTdAlt_slope1100001000001000001100011[] = {0, 1, 6, 12, 18, 19, 23, 24, -1};
+inline constexpr int8_t kTdAlt_slope1100000000000000001100011[] = {0, 1, 18, 19, 23, 24, -1};
+inline constexpr int8_t kTdAlt_slope00011010010100100001000011[] = {3, 4, 6, 9, 11, 14, 19, 24, 25, -1};
+inline constexpr int8_t kTdAlt_slope00011010000100000001000011[] = {3, 4, 6, 11, 19, 25, 25, -1};
+inline constexpr int8_t kTdAlt_slope01000000100000010000001[] = {1, 8, 15, 22, -1};
+inline constexpr int8_t kTdAlt_slope01000000000000000000001[] = {1, 22, -1};
+inline constexpr int8_t kTdAlt_slope001001001[] = {2, 5, 8, -1};
+inline constexpr int8_t kTdAlt_slope1001001[] = {0, 3, 6, -1};
+inline constexpr int8_t kTdAlt_slope1101101[] = {0, 1, 3, 4, 6, -1};
+inline constexpr int8_t kTdAlt_slope1101[] = {0, 1, 3, -1};
+inline constexpr int8_t kTdAlt_slope11101[] = {0, 1, 2, 4, -1};
+inline constexpr int8_t kTdAlt_slope000101[] = {3, 5, -1};
 
 // Indexed by the u8 template ID stored in TD .bin map cells.
 inline constexpr TdTemplateInfo kTdTemplateTable[] = {
-    {"clear1", 15},  // 0 TEMPLATE_CLEAR1
-    {"w1", 13},  // 1 TEMPLATE_WATER
-    {"w2", 12},  // 2 TEMPLATE_WATER2
-    {"sh1", 12},  // 3 TEMPLATE_SHORE1
-    {"sh2", 12},  // 4 TEMPLATE_SHORE2
-    {"sh3", 12},  // 5 TEMPLATE_SHORE3
-    {"sh4", 12},  // 6 TEMPLATE_SHORE4
-    {"sh5", 12},  // 7 TEMPLATE_SHORE5
-    {"sh11", 12},  // 8 TEMPLATE_SHORE11
-    {"sh12", 12},  // 9 TEMPLATE_SHORE12
-    {"sh13", 12},  // 10 TEMPLATE_SHORE13
-    {"sh14", 12},  // 11 TEMPLATE_SHORE14
-    {"sh15", 12},  // 12 TEMPLATE_SHORE15
-    {"s01", 13},  // 13 TEMPLATE_SLOPE1
-    {"s02", 13},  // 14 TEMPLATE_SLOPE2
-    {"s03", 13},  // 15 TEMPLATE_SLOPE3
-    {"s04", 13},  // 16 TEMPLATE_SLOPE4
-    {"s05", 13},  // 17 TEMPLATE_SLOPE5
-    {"s06", 13},  // 18 TEMPLATE_SLOPE6
-    {"s07", 13},  // 19 TEMPLATE_SLOPE7
-    {"s08", 13},  // 20 TEMPLATE_SLOPE8
-    {"s09", 13},  // 21 TEMPLATE_SLOPE9
-    {"s10", 13},  // 22 TEMPLATE_SLOPE10
-    {"s11", 13},  // 23 TEMPLATE_SLOPE11
-    {"s12", 13},  // 24 TEMPLATE_SLOPE12
-    {"s13", 13},  // 25 TEMPLATE_SLOPE13
-    {"s14", 13},  // 26 TEMPLATE_SLOPE14
-    {"s15", 13},  // 27 TEMPLATE_SLOPE15
-    {"s16", 13},  // 28 TEMPLATE_SLOPE16
-    {"s17", 13},  // 29 TEMPLATE_SLOPE17
-    {"s18", 13},  // 30 TEMPLATE_SLOPE18
-    {"s19", 13},  // 31 TEMPLATE_SLOPE19
-    {"s20", 13},  // 32 TEMPLATE_SLOPE20
-    {"s21", 13},  // 33 TEMPLATE_SLOPE21
-    {"s22", 13},  // 34 TEMPLATE_SLOPE22
-    {"s23", 13},  // 35 TEMPLATE_SLOPE23
-    {"s24", 13},  // 36 TEMPLATE_SLOPE24
-    {"s25", 13},  // 37 TEMPLATE_SLOPE25
-    {"s26", 13},  // 38 TEMPLATE_SLOPE26
-    {"s27", 13},  // 39 TEMPLATE_SLOPE27
-    {"s28", 13},  // 40 TEMPLATE_SLOPE28
-    {"s29", 13},  // 41 TEMPLATE_SLOPE29
-    {"s30", 13},  // 42 TEMPLATE_SLOPE30
-    {"s31", 13},  // 43 TEMPLATE_SLOPE31
-    {"s32", 13},  // 44 TEMPLATE_SLOPE32
-    {"s33", 13},  // 45 TEMPLATE_SLOPE33
-    {"s34", 13},  // 46 TEMPLATE_SLOPE34
-    {"s35", 13},  // 47 TEMPLATE_SLOPE35
-    {"s36", 13},  // 48 TEMPLATE_SLOPE36
-    {"s37", 13},  // 49 TEMPLATE_SLOPE37
-    {"s38", 13},  // 50 TEMPLATE_SLOPE38
-    {"sh32", 12},  // 51 TEMPLATE_SHORE32
-    {"sh33", 12},  // 52 TEMPLATE_SHORE33
-    {"sh20", 1},  // 53 TEMPLATE_SHORE20
-    {"sh21", 1},  // 54 TEMPLATE_SHORE21
-    {"sh22", 1},  // 55 TEMPLATE_SHORE22
-    {"sh23", 1},  // 56 TEMPLATE_SHORE23
-    {"br1", 1},  // 57 TEMPLATE_BRUSH1
-    {"br2", 1},  // 58 TEMPLATE_BRUSH2
-    {"br3", 1},  // 59 TEMPLATE_BRUSH3
-    {"br4", 1},  // 60 TEMPLATE_BRUSH4
-    {"br5", 1},  // 61 TEMPLATE_BRUSH5
-    {"br6", 1},  // 62 TEMPLATE_BRUSH6
-    {"br7", 1},  // 63 TEMPLATE_BRUSH7
-    {"br8", 1},  // 64 TEMPLATE_BRUSH8
-    {"br9", 1},  // 65 TEMPLATE_BRUSH9
-    {"br10", 1},  // 66 TEMPLATE_BRUSH10
-    {"p01", 5},  // 67 TEMPLATE_PATCH1
-    {"p02", 5},  // 68 TEMPLATE_PATCH2
-    {"p03", 5},  // 69 TEMPLATE_PATCH3
-    {"p04", 5},  // 70 TEMPLATE_PATCH4
-    {"p05", 1},  // 71 TEMPLATE_PATCH5
-    {"p06", 1},  // 72 TEMPLATE_PATCH6
-    {"p07", 13},  // 73 TEMPLATE_PATCH7
-    {"p08", 13},  // 74 TEMPLATE_PATCH8
-    {"sh16", 12},  // 75 TEMPLATE_SHORE16
-    {"sh17", 13},  // 76 TEMPLATE_SHORE17
-    {"sh18", 13},  // 77 TEMPLATE_SHORE18
-    {"sh19", 1},  // 78 TEMPLATE_SHORE19
-    {"p13", 12},  // 79 TEMPLATE_PATCH13
-    {"p14", 12},  // 80 TEMPLATE_PATCH14
-    {"p15", 12},  // 81 TEMPLATE_PATCH15
-    {"b1", 13},  // 82 TEMPLATE_BOULDER1
-    {"b2", 13},  // 83 TEMPLATE_BOULDER2
-    {"b3", 12},  // 84 TEMPLATE_BOULDER3
-    {"b4", 4},  // 85 TEMPLATE_BOULDER4
-    {"b5", 4},  // 86 TEMPLATE_BOULDER5
-    {"b6", 4},  // 87 TEMPLATE_BOULDER6
-    {"sh6", 12},  // 88 TEMPLATE_SHORE6
-    {"sh7", 12},  // 89 TEMPLATE_SHORE7
-    {"sh8", 12},  // 90 TEMPLATE_SHORE8
-    {"sh9", 12},  // 91 TEMPLATE_SHORE9
-    {"sh10", 12},  // 92 TEMPLATE_SHORE10
-    {"d01", 13},  // 93 TEMPLATE_ROAD1
-    {"d02", 13},  // 94 TEMPLATE_ROAD2
-    {"d03", 13},  // 95 TEMPLATE_ROAD3
-    {"d04", 13},  // 96 TEMPLATE_ROAD4
-    {"d05", 13},  // 97 TEMPLATE_ROAD5
-    {"d06", 13},  // 98 TEMPLATE_ROAD6
-    {"d07", 13},  // 99 TEMPLATE_ROAD7
-    {"d08", 13},  // 100 TEMPLATE_ROAD8
-    {"d09", 13},  // 101 TEMPLATE_ROAD9
-    {"d10", 13},  // 102 TEMPLATE_ROAD10
-    {"d11", 13},  // 103 TEMPLATE_ROAD11
-    {"d12", 13},  // 104 TEMPLATE_ROAD12
-    {"d13", 13},  // 105 TEMPLATE_ROAD13
-    {"d14", 13},  // 106 TEMPLATE_ROAD14
-    {"d15", 13},  // 107 TEMPLATE_ROAD15
-    {"d16", 13},  // 108 TEMPLATE_ROAD16
-    {"d17", 13},  // 109 TEMPLATE_ROAD17
-    {"d18", 13},  // 110 TEMPLATE_ROAD18
-    {"d19", 13},  // 111 TEMPLATE_ROAD19
-    {"d20", 13},  // 112 TEMPLATE_ROAD20
-    {"d21", 13},  // 113 TEMPLATE_ROAD21
-    {"d22", 13},  // 114 TEMPLATE_ROAD22
-    {"d23", 13},  // 115 TEMPLATE_ROAD23
-    {"d24", 13},  // 116 TEMPLATE_ROAD24
-    {"d25", 13},  // 117 TEMPLATE_ROAD25
-    {"d26", 13},  // 118 TEMPLATE_ROAD26
-    {"d27", 13},  // 119 TEMPLATE_ROAD27
-    {"d28", 13},  // 120 TEMPLATE_ROAD28
-    {"d29", 13},  // 121 TEMPLATE_ROAD29
-    {"d30", 13},  // 122 TEMPLATE_ROAD30
-    {"d31", 13},  // 123 TEMPLATE_ROAD31
-    {"d32", 13},  // 124 TEMPLATE_ROAD32
-    {"d33", 13},  // 125 TEMPLATE_ROAD33
-    {"d34", 13},  // 126 TEMPLATE_ROAD34
-    {"d35", 13},  // 127 TEMPLATE_ROAD35
-    {"d36", 13},  // 128 TEMPLATE_ROAD36
-    {"d37", 13},  // 129 TEMPLATE_ROAD37
-    {"d38", 13},  // 130 TEMPLATE_ROAD38
-    {"d39", 13},  // 131 TEMPLATE_ROAD39
-    {"d40", 13},  // 132 TEMPLATE_ROAD40
-    {"d41", 13},  // 133 TEMPLATE_ROAD41
-    {"d42", 13},  // 134 TEMPLATE_ROAD42
-    {"d43", 13},  // 135 TEMPLATE_ROAD43
-    {"rv01", 12},  // 136 TEMPLATE_RIVER1
-    {"rv02", 12},  // 137 TEMPLATE_RIVER2
-    {"rv03", 12},  // 138 TEMPLATE_RIVER3
-    {"rv04", 12},  // 139 TEMPLATE_RIVER4
-    {"rv05", 12},  // 140 TEMPLATE_RIVER5
-    {"rv06", 12},  // 141 TEMPLATE_RIVER6
-    {"rv07", 12},  // 142 TEMPLATE_RIVER7
-    {"rv08", 12},  // 143 TEMPLATE_RIVER8
-    {"rv09", 12},  // 144 TEMPLATE_RIVER9
-    {"rv10", 12},  // 145 TEMPLATE_RIVER10
-    {"rv11", 12},  // 146 TEMPLATE_RIVER11
-    {"rv12", 12},  // 147 TEMPLATE_RIVER12
-    {"rv13", 12},  // 148 TEMPLATE_RIVER13
-    {"rv14", 1},  // 149 TEMPLATE_RIVER14
-    {"rv15", 1},  // 150 TEMPLATE_RIVER15
-    {"rv16", 1},  // 151 TEMPLATE_RIVER16
-    {"rv17", 1},  // 152 TEMPLATE_RIVER17
-    {"rv18", 1},  // 153 TEMPLATE_RIVER18
-    {"rv19", 1},  // 154 TEMPLATE_RIVER19
-    {"rv20", 1},  // 155 TEMPLATE_RIVER20
-    {"rv21", 1},  // 156 TEMPLATE_RIVER21
-    {"rv22", 1},  // 157 TEMPLATE_RIVER22
-    {"rv23", 1},  // 158 TEMPLATE_RIVER23
-    {"rv24", 1},  // 159 TEMPLATE_RIVER24
-    {"rv25", 1},  // 160 TEMPLATE_RIVER25
-    {"ford1", 13},  // 161 TEMPLATE_FORD1
-    {"ford2", 13},  // 162 TEMPLATE_FORD2
-    {"falls1", 13},  // 163 TEMPLATE_FALLS1
-    {"falls2", 13},  // 164 TEMPLATE_FALLS2
-    {"bridge1", 12},  // 165 TEMPLATE_BRIDGE1
-    {"bridge1d", 12},  // 166 TEMPLATE_BRIDGE1D
-    {"bridge2", 12},  // 167 TEMPLATE_BRIDGE2
-    {"bridge2d", 12},  // 168 TEMPLATE_BRIDGE2D
-    {"bridge3", 1},  // 169 TEMPLATE_BRIDGE3
-    {"bridge3d", 1},  // 170 TEMPLATE_BRIDGE3D
-    {"bridge4", 1},  // 171 TEMPLATE_BRIDGE4
-    {"bridge4d", 1},  // 172 TEMPLATE_BRIDGE4D
-    {"sh24", 1},  // 173 TEMPLATE_SHORE24
-    {"sh25", 1},  // 174 TEMPLATE_SHORE25
-    {"sh26", 1},  // 175 TEMPLATE_SHORE26
-    {"sh27", 1},  // 176 TEMPLATE_SHORE27
-    {"sh28", 1},  // 177 TEMPLATE_SHORE28
-    {"sh29", 1},  // 178 TEMPLATE_SHORE29
-    {"sh30", 1},  // 179 TEMPLATE_SHORE30
-    {"sh31", 1},  // 180 TEMPLATE_SHORE31
-    {"p16", 8},  // 181 TEMPLATE_PATCH16
-    {"p17", 8},  // 182 TEMPLATE_PATCH17
-    {"p18", 8},  // 183 TEMPLATE_PATCH18
-    {"p19", 8},  // 184 TEMPLATE_PATCH19
-    {"p20", 8},  // 185 TEMPLATE_PATCH20
-    {"sh34", 12},  // 186 TEMPLATE_SHORE34
-    {"sh35", 12},  // 187 TEMPLATE_SHORE35
-    {"sh36", 1},  // 188 TEMPLATE_SHORE36
-    {"sh37", 1},  // 189 TEMPLATE_SHORE37
-    {"sh38", 1},  // 190 TEMPLATE_SHORE38
-    {"sh39", 1},  // 191 TEMPLATE_SHORE39
-    {"sh40", 1},  // 192 TEMPLATE_SHORE40
-    {"sh41", 1},  // 193 TEMPLATE_SHORE41
-    {"sh42", 1},  // 194 TEMPLATE_SHORE42
-    {"sh43", 1},  // 195 TEMPLATE_SHORE43
-    {"sh44", 1},  // 196 TEMPLATE_SHORE44
-    {"sh45", 1},  // 197 TEMPLATE_SHORE45
-    {"sh46", 1},  // 198 TEMPLATE_SHORE46
-    {"sh47", 1},  // 199 TEMPLATE_SHORE47
-    {"sh48", 1},  // 200 TEMPLATE_SHORE48
-    {"sh49", 1},  // 201 TEMPLATE_SHORE49
-    {"sh50", 1},  // 202 TEMPLATE_SHORE50
-    {"sh51", 1},  // 203 TEMPLATE_SHORE51
-    {"sh52", 1},  // 204 TEMPLATE_SHORE52
-    {"sh53", 1},  // 205 TEMPLATE_SHORE53
-    {"sh54", 1},  // 206 TEMPLATE_SHORE54
-    {"sh55", 1},  // 207 TEMPLATE_SHORE55
-    {"sh56", 1},  // 208 TEMPLATE_SHORE56
-    {"sh57", 1},  // 209 TEMPLATE_SHORE57
-    {"sh58", 1},  // 210 TEMPLATE_SHORE58
-    {"sh59", 1},  // 211 TEMPLATE_SHORE59
-    {"sh60", 1},  // 212 TEMPLATE_SHORE60
-    {"sh61", 1},  // 213 TEMPLATE_SHORE61
-    {"sh62", 1},  // 214 TEMPLATE_SHORE62
-    {"sh63", 1},  // 215 TEMPLATE_SHORE63
+    {"clear1", 15, 0, 0, nullptr},  // 0 TEMPLATE_CLEAR1
+    {"w1", 13, 2, 2, nullptr},  // 1 TEMPLATE_WATER
+    {"w2", 12, 2, 2, nullptr},  // 2 TEMPLATE_WATER2
+    {"sh1", 12, 2, 6, kTdAlt_slope111111},  // 3 TEMPLATE_SHORE1
+    {"sh2", 12, 3, 6, kTdAlt_slope111},  // 4 TEMPLATE_SHORE2
+    {"sh3", 12, 3, 2, nullptr},  // 5 TEMPLATE_SHORE3
+    {"sh4", 12, 3, 2, nullptr},  // 6 TEMPLATE_SHORE4
+    {"sh5", 12, 2, 6, kTdAlt_slope111111},  // 7 TEMPLATE_SHORE5
+    {"sh11", 12, 2, 6, kTdAlt_slope1001},  // 8 TEMPLATE_SHORE11
+    {"sh12", 12, 2, 6, kTdAlt_slope000001001},  // 9 TEMPLATE_SHORE12
+    {"sh13", 12, 2, 6, kTdAlt_slope0000001},  // 10 TEMPLATE_SHORE13
+    {"sh14", 12, 3, 6, kTdAlt_slope00000011},  // 11 TEMPLATE_SHORE14
+    {"sh15", 12, 3, 6, kTdAlt_slope000000101},  // 12 TEMPLATE_SHORE15
+    {"s01", 13, 3, 0, kTdAlt_slope001},  // 13 TEMPLATE_SLOPE1
+    {"s02", 13, 3, 0, kTdAlt_slope01},  // 14 TEMPLATE_SLOPE2
+    {"s03", 13, 3, 3, nullptr},  // 15 TEMPLATE_SLOPE3
+    {"s04", 13, 3, 3, nullptr},  // 16 TEMPLATE_SLOPE4
+    {"s05", 13, 3, 3, nullptr},  // 17 TEMPLATE_SLOPE5
+    {"s06", 13, 3, 0, kTdAlt_slope1},  // 18 TEMPLATE_SLOPE6
+    {"s07", 13, 3, 3, nullptr},  // 19 TEMPLATE_SLOPE7
+    {"s08", 13, 3, 0, kTdAlt_slope01},  // 20 TEMPLATE_SLOPE8
+    {"s09", 13, 3, 0, kTdAlt_slope0001},  // 21 TEMPLATE_SLOPE9
+    {"s10", 13, 3, 3, nullptr},  // 22 TEMPLATE_SLOPE10
+    {"s11", 13, 3, 3, nullptr},  // 23 TEMPLATE_SLOPE11
+    {"s12", 13, 3, 3, nullptr},  // 24 TEMPLATE_SLOPE12
+    {"s13", 13, 3, 0, kTdAlt_slope000001},  // 25 TEMPLATE_SLOPE13
+    {"s14", 13, 3, 0, kTdAlt_slope0111},  // 26 TEMPLATE_SLOPE14
+    {"s15", 13, 3, 0, kTdAlt_slope01},  // 27 TEMPLATE_SLOPE15
+    {"s16", 13, 3, 3, nullptr},  // 28 TEMPLATE_SLOPE16
+    {"s17", 13, 3, 3, nullptr},  // 29 TEMPLATE_SLOPE17
+    {"s18", 13, 3, 3, nullptr},  // 30 TEMPLATE_SLOPE18
+    {"s19", 13, 3, 3, nullptr},  // 31 TEMPLATE_SLOPE19
+    {"s20", 13, 3, 0, kTdAlt_slope000001},  // 32 TEMPLATE_SLOPE20
+    {"s21", 13, 3, 3, nullptr},  // 33 TEMPLATE_SLOPE21
+    {"s22", 13, 3, 3, nullptr},  // 34 TEMPLATE_SLOPE22
+    {"s23", 13, 3, 0, kTdAlt_slope000001},  // 35 TEMPLATE_SLOPE23
+    {"s24", 13, 3, 3, nullptr},  // 36 TEMPLATE_SLOPE24
+    {"s25", 13, 3, 3, nullptr},  // 37 TEMPLATE_SLOPE25
+    {"s26", 13, 3, 3, nullptr},  // 38 TEMPLATE_SLOPE26
+    {"s27", 13, 3, 0, kTdAlt_slope0011},  // 39 TEMPLATE_SLOPE27
+    {"s28", 13, 3, 3, nullptr},  // 40 TEMPLATE_SLOPE28
+    {"s29", 13, 3, 3, nullptr},  // 41 TEMPLATE_SLOPE29
+    {"s30", 13, 3, 3, nullptr},  // 42 TEMPLATE_SLOPE30
+    {"s31", 13, 3, 3, nullptr},  // 43 TEMPLATE_SLOPE31
+    {"s32", 13, 3, 3, nullptr},  // 44 TEMPLATE_SLOPE32
+    {"s33", 13, 3, 3, nullptr},  // 45 TEMPLATE_SLOPE33
+    {"s34", 13, 3, 3, nullptr},  // 46 TEMPLATE_SLOPE34
+    {"s35", 13, 3, 3, nullptr},  // 47 TEMPLATE_SLOPE35
+    {"s36", 13, 3, 3, nullptr},  // 48 TEMPLATE_SLOPE36
+    {"s37", 13, 3, 3, nullptr},  // 49 TEMPLATE_SLOPE37
+    {"s38", 13, 3, 3, nullptr},  // 50 TEMPLATE_SLOPE38
+    {"sh32", 12, 0, 2, kTdAlt_slope1},  // 51 TEMPLATE_SHORE32
+    {"sh33", 12, 0, 2, kTdAlt_slope001},  // 52 TEMPLATE_SHORE33
+    {"sh20", 1, 3, 3, nullptr},  // 53 TEMPLATE_SHORE20
+    {"sh21", 1, 3, 3, nullptr},  // 54 TEMPLATE_SHORE21
+    {"sh22", 1, 3, 3, nullptr},  // 55 TEMPLATE_SHORE22
+    {"sh23", 1, 3, 0, kTdAlt_slope01},  // 56 TEMPLATE_SHORE23
+    {"br1", 1, 3, 3, nullptr},  // 57 TEMPLATE_BRUSH1
+    {"br2", 1, 3, 3, nullptr},  // 58 TEMPLATE_BRUSH2
+    {"br3", 1, 3, 3, nullptr},  // 59 TEMPLATE_BRUSH3
+    {"br4", 1, 3, 3, nullptr},  // 60 TEMPLATE_BRUSH4
+    {"br5", 1, 3, 3, nullptr},  // 61 TEMPLATE_BRUSH5
+    {"br6", 1, 3, 3, nullptr},  // 62 TEMPLATE_BRUSH6
+    {"br7", 1, 3, 3, nullptr},  // 63 TEMPLATE_BRUSH7
+    {"br8", 1, 3, 3, nullptr},  // 64 TEMPLATE_BRUSH8
+    {"br9", 1, 3, 3, nullptr},  // 65 TEMPLATE_BRUSH9
+    {"br10", 1, 3, 3, nullptr},  // 66 TEMPLATE_BRUSH10
+    {"p01", 5, 0, 0, nullptr},  // 67 TEMPLATE_PATCH1
+    {"p02", 5, 3, 0, nullptr},  // 68 TEMPLATE_PATCH2
+    {"p03", 5, 0, 0, nullptr},  // 69 TEMPLATE_PATCH3
+    {"p04", 5, 3, 0, nullptr},  // 70 TEMPLATE_PATCH4
+    {"p05", 1, 0, 0, nullptr},  // 71 TEMPLATE_PATCH5
+    {"p06", 1, 0, 0, nullptr},  // 72 TEMPLATE_PATCH6
+    {"p07", 13, 0, 0, nullptr},  // 73 TEMPLATE_PATCH7
+    {"p08", 13, 0, 0, nullptr},  // 74 TEMPLATE_PATCH8
+    {"sh16", 12, 3, 3, nullptr},  // 75 TEMPLATE_SHORE16
+    {"sh17", 13, 2, 2, nullptr},  // 76 TEMPLATE_SHORE17
+    {"sh18", 13, 2, 2, nullptr},  // 77 TEMPLATE_SHORE18
+    {"sh19", 1, 3, 3, nullptr},  // 78 TEMPLATE_SHORE19
+    {"p13", 12, 0, 0, nullptr},  // 79 TEMPLATE_PATCH13
+    {"p14", 12, 0, 0, nullptr},  // 80 TEMPLATE_PATCH14
+    {"p15", 12, 0, 0, nullptr},  // 81 TEMPLATE_PATCH15
+    {"b1", 13, 3, 3, nullptr},  // 82 TEMPLATE_BOULDER1
+    {"b2", 13, 3, 3, nullptr},  // 83 TEMPLATE_BOULDER2
+    {"b3", 12, 3, 3, nullptr},  // 84 TEMPLATE_BOULDER3
+    {"b4", 4, 3, 3, nullptr},  // 85 TEMPLATE_BOULDER4
+    {"b5", 4, 3, 3, nullptr},  // 86 TEMPLATE_BOULDER5
+    {"b6", 4, 3, 3, nullptr},  // 87 TEMPLATE_BOULDER6
+    {"sh6", 12, 2, 6, kTdAlt_slope111111},  // 88 TEMPLATE_SHORE6
+    {"sh7", 12, 2, 6, kTdAlt_slope1},  // 89 TEMPLATE_SHORE7
+    {"sh8", 12, 2, 6, kTdAlt_slope11111111},  // 90 TEMPLATE_SHORE8
+    {"sh9", 12, 2, 6, kTdAlt_slope111111011},  // 91 TEMPLATE_SHORE9
+    {"sh10", 12, 2, 6, kTdAlt_slope01},  // 92 TEMPLATE_SHORE10
+    {"d01", 13, 0, 0, nullptr},  // 93 TEMPLATE_ROAD1
+    {"d02", 13, 0, 0, nullptr},  // 94 TEMPLATE_ROAD2
+    {"d03", 13, 0, 0, nullptr},  // 95 TEMPLATE_ROAD3
+    {"d04", 13, 0, 0, nullptr},  // 96 TEMPLATE_ROAD4
+    {"d05", 13, 0, 0, nullptr},  // 97 TEMPLATE_ROAD5
+    {"d06", 13, 0, 0, nullptr},  // 98 TEMPLATE_ROAD6
+    {"d07", 13, 0, 0, nullptr},  // 99 TEMPLATE_ROAD7
+    {"d08", 13, 0, 0, nullptr},  // 100 TEMPLATE_ROAD8
+    {"d09", 13, 0, 0, nullptr},  // 101 TEMPLATE_ROAD9
+    {"d10", 13, 0, 0, nullptr},  // 102 TEMPLATE_ROAD10
+    {"d11", 13, 0, 0, nullptr},  // 103 TEMPLATE_ROAD11
+    {"d12", 13, 0, 0, nullptr},  // 104 TEMPLATE_ROAD12
+    {"d13", 13, 0, 0, nullptr},  // 105 TEMPLATE_ROAD13
+    {"d14", 13, 0, 0, nullptr},  // 106 TEMPLATE_ROAD14
+    {"d15", 13, 0, 0, nullptr},  // 107 TEMPLATE_ROAD15
+    {"d16", 13, 0, 0, nullptr},  // 108 TEMPLATE_ROAD16
+    {"d17", 13, 0, 0, nullptr},  // 109 TEMPLATE_ROAD17
+    {"d18", 13, 0, 0, nullptr},  // 110 TEMPLATE_ROAD18
+    {"d19", 13, 0, 0, nullptr},  // 111 TEMPLATE_ROAD19
+    {"d20", 13, 0, 0, nullptr},  // 112 TEMPLATE_ROAD20
+    {"d21", 13, 0, 0, nullptr},  // 113 TEMPLATE_ROAD21
+    {"d22", 13, 0, 0, nullptr},  // 114 TEMPLATE_ROAD22
+    {"d23", 13, 0, 0, nullptr},  // 115 TEMPLATE_ROAD23
+    {"d24", 13, 0, 0, nullptr},  // 116 TEMPLATE_ROAD24
+    {"d25", 13, 0, 0, nullptr},  // 117 TEMPLATE_ROAD25
+    {"d26", 13, 0, 0, nullptr},  // 118 TEMPLATE_ROAD26
+    {"d27", 13, 0, 0, nullptr},  // 119 TEMPLATE_ROAD27
+    {"d28", 13, 0, 0, nullptr},  // 120 TEMPLATE_ROAD28
+    {"d29", 13, 0, 0, nullptr},  // 121 TEMPLATE_ROAD29
+    {"d30", 13, 0, 0, nullptr},  // 122 TEMPLATE_ROAD30
+    {"d31", 13, 0, 0, nullptr},  // 123 TEMPLATE_ROAD31
+    {"d32", 13, 0, 0, nullptr},  // 124 TEMPLATE_ROAD32
+    {"d33", 13, 0, 0, nullptr},  // 125 TEMPLATE_ROAD33
+    {"d34", 13, 0, 0, nullptr},  // 126 TEMPLATE_ROAD34
+    {"d35", 13, 0, 0, nullptr},  // 127 TEMPLATE_ROAD35
+    {"d36", 13, 0, 0, nullptr},  // 128 TEMPLATE_ROAD36
+    {"d37", 13, 0, 0, nullptr},  // 129 TEMPLATE_ROAD37
+    {"d38", 13, 0, 0, nullptr},  // 130 TEMPLATE_ROAD38
+    {"d39", 13, 0, 0, nullptr},  // 131 TEMPLATE_ROAD39
+    {"d40", 13, 0, 0, nullptr},  // 132 TEMPLATE_ROAD40
+    {"d41", 13, 0, 0, nullptr},  // 133 TEMPLATE_ROAD41
+    {"d42", 13, 0, 0, nullptr},  // 134 TEMPLATE_ROAD42
+    {"d43", 13, 0, 0, nullptr},  // 135 TEMPLATE_ROAD43
+    {"rv01", 12, 2, 0, nullptr},  // 136 TEMPLATE_RIVER1
+    {"rv02", 12, 2, 3, nullptr},  // 137 TEMPLATE_RIVER2
+    {"rv03", 12, 2, 0, kTdAlt_slope00000001},  // 138 TEMPLATE_RIVER3
+    {"rv04", 12, 2, 3, nullptr},  // 139 TEMPLATE_RIVER4
+    {"rv05", 12, 2, 3, nullptr},  // 140 TEMPLATE_RIVER5
+    {"rv06", 12, 2, 3, nullptr},  // 141 TEMPLATE_RIVER6
+    {"rv07", 12, 2, 3, nullptr},  // 142 TEMPLATE_RIVER7
+    {"rv08", 12, 2, 3, nullptr},  // 143 TEMPLATE_RIVER8
+    {"rv09", 12, 2, 3, nullptr},  // 144 TEMPLATE_RIVER9
+    {"rv10", 12, 2, 3, nullptr},  // 145 TEMPLATE_RIVER10
+    {"rv11", 12, 2, 3, nullptr},  // 146 TEMPLATE_RIVER11
+    {"rv12", 12, 2, 3, nullptr},  // 147 TEMPLATE_RIVER12
+    {"rv13", 12, 2, 3, nullptr},  // 148 TEMPLATE_RIVER13
+    {"rv14", 1, 2, 3, nullptr},  // 149 TEMPLATE_RIVER14
+    {"rv15", 1, 2, 3, nullptr},  // 150 TEMPLATE_RIVER15
+    {"rv16", 1, 2, 3, nullptr},  // 151 TEMPLATE_RIVER16
+    {"rv17", 1, 2, 3, nullptr},  // 152 TEMPLATE_RIVER17
+    {"rv18", 1, 2, 3, nullptr},  // 153 TEMPLATE_RIVER18
+    {"rv19", 1, 2, 3, nullptr},  // 154 TEMPLATE_RIVER19
+    {"rv20", 1, 2, 3, nullptr},  // 155 TEMPLATE_RIVER20
+    {"rv21", 1, 2, 3, nullptr},  // 156 TEMPLATE_RIVER21
+    {"rv22", 1, 2, 3, nullptr},  // 157 TEMPLATE_RIVER22
+    {"rv23", 1, 2, 3, nullptr},  // 158 TEMPLATE_RIVER23
+    {"rv24", 1, 2, 3, nullptr},  // 159 TEMPLATE_RIVER24
+    {"rv25", 1, 2, 3, nullptr},  // 160 TEMPLATE_RIVER25
+    {"ford1", 13, 2, 0, kTdAlt_slope001111001},  // 161 TEMPLATE_FORD1
+    {"ford2", 13, 2, 0, kTdAlt_slope111010011},  // 162 TEMPLATE_FORD2
+    {"falls1", 13, 2, 0, kTdAlt_slope1},  // 163 TEMPLATE_FALLS1
+    {"falls2", 13, 2, 0, nullptr},  // 164 TEMPLATE_FALLS2
+    {"bridge1", 12, 2, 0, kTdAlt_slope00110010010011},  // 165 TEMPLATE_BRIDGE1
+    {"bridge1d", 12, 2, 0, kTdAlt_slope00110000000011},  // 166 TEMPLATE_BRIDGE1D
+    {"bridge2", 12, 2, 0, kTdAlt_slope1100001000001000001100011},  // 167 TEMPLATE_BRIDGE2
+    {"bridge2d", 12, 2, 0, kTdAlt_slope1100000000000000001100011},  // 168 TEMPLATE_BRIDGE2D
+    {"bridge3", 1, 2, 0, kTdAlt_slope00011010010100100001000011},  // 169 TEMPLATE_BRIDGE3
+    {"bridge3d", 1, 2, 0, kTdAlt_slope00011010000100000001000011},  // 170 TEMPLATE_BRIDGE3D
+    {"bridge4", 1, 2, 0, kTdAlt_slope01000000100000010000001},  // 171 TEMPLATE_BRIDGE4
+    {"bridge4d", 1, 2, 0, kTdAlt_slope01000000000000000000001},  // 172 TEMPLATE_BRIDGE4D
+    {"sh24", 1, 3, 0, kTdAlt_slope000001},  // 173 TEMPLATE_SHORE24
+    {"sh25", 1, 3, 0, kTdAlt_slope0001},  // 174 TEMPLATE_SHORE25
+    {"sh26", 1, 3, 0, nullptr},  // 175 TEMPLATE_SHORE26
+    {"sh27", 1, 3, 0, nullptr},  // 176 TEMPLATE_SHORE27
+    {"sh28", 1, 3, 0, nullptr},  // 177 TEMPLATE_SHORE28
+    {"sh29", 1, 3, 0, kTdAlt_slope00000001},  // 178 TEMPLATE_SHORE29
+    {"sh30", 1, 3, 0, nullptr},  // 179 TEMPLATE_SHORE30
+    {"sh31", 1, 3, 0, nullptr},  // 180 TEMPLATE_SHORE31
+    {"p16", 8, 0, 0, nullptr},  // 181 TEMPLATE_PATCH16
+    {"p17", 8, 0, 0, nullptr},  // 182 TEMPLATE_PATCH17
+    {"p18", 8, 0, 0, nullptr},  // 183 TEMPLATE_PATCH18
+    {"p19", 8, 0, 0, nullptr},  // 184 TEMPLATE_PATCH19
+    {"p20", 8, 0, 0, nullptr},  // 185 TEMPLATE_PATCH20
+    {"sh34", 12, 0, 2, kTdAlt_slope001001001},  // 186 TEMPLATE_SHORE34
+    {"sh35", 12, 0, 2, kTdAlt_slope1001001},  // 187 TEMPLATE_SHORE35
+    {"sh36", 1, 0, 0, nullptr},  // 188 TEMPLATE_SHORE36
+    {"sh37", 1, 0, 0, nullptr},  // 189 TEMPLATE_SHORE37
+    {"sh38", 1, 0, 0, nullptr},  // 190 TEMPLATE_SHORE38
+    {"sh39", 1, 0, 0, nullptr},  // 191 TEMPLATE_SHORE39
+    {"sh40", 1, 2, 0, kTdAlt_slope1},  // 192 TEMPLATE_SHORE40
+    {"sh41", 1, 0, 2, kTdAlt_slope1101101},  // 193 TEMPLATE_SHORE41
+    {"sh42", 1, 2, 0, nullptr},  // 194 TEMPLATE_SHORE42
+    {"sh43", 1, 2, 0, nullptr},  // 195 TEMPLATE_SHORE43
+    {"sh44", 1, 2, 0, nullptr},  // 196 TEMPLATE_SHORE44
+    {"sh45", 1, 2, 0, nullptr},  // 197 TEMPLATE_SHORE45
+    {"sh46", 1, 2, 0, kTdAlt_slope1101},  // 198 TEMPLATE_SHORE46
+    {"sh47", 1, 2, 0, nullptr},  // 199 TEMPLATE_SHORE47
+    {"sh48", 1, 2, 0, nullptr},  // 200 TEMPLATE_SHORE48
+    {"sh49", 1, 2, 0, nullptr},  // 201 TEMPLATE_SHORE49
+    {"sh50", 1, 2, 0, kTdAlt_slope00000001},  // 202 TEMPLATE_SHORE50
+    {"sh51", 1, 2, 0, nullptr},  // 203 TEMPLATE_SHORE51
+    {"sh52", 1, 2, 0, nullptr},  // 204 TEMPLATE_SHORE52
+    {"sh53", 1, 2, 0, kTdAlt_slope11101},  // 205 TEMPLATE_SHORE53
+    {"sh54", 1, 2, 0, kTdAlt_slope1},  // 206 TEMPLATE_SHORE54
+    {"sh55", 1, 2, 0, kTdAlt_slope001},  // 207 TEMPLATE_SHORE55
+    {"sh56", 1, 2, 0, nullptr},  // 208 TEMPLATE_SHORE56
+    {"sh57", 1, 2, 0, nullptr},  // 209 TEMPLATE_SHORE57
+    {"sh58", 1, 2, 0, nullptr},  // 210 TEMPLATE_SHORE58
+    {"sh59", 1, 2, 0, kTdAlt_slope1},  // 211 TEMPLATE_SHORE59
+    {"sh60", 1, 2, 0, kTdAlt_slope000101},  // 212 TEMPLATE_SHORE60
+    {"sh61", 1, 2, 0, kTdAlt_slope01},  // 213 TEMPLATE_SHORE61
+    {"sh62", 1, 2, 0, nullptr},  // 214 TEMPLATE_SHORE62
+    {"sh63", 1, 2, 0, nullptr},  // 215 TEMPLATE_SHORE63
 };
 
 inline constexpr uint16_t kTdTemplateCount = sizeof(kTdTemplateTable) / sizeof(kTdTemplateTable[0]);

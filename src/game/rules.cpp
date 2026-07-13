@@ -117,6 +117,9 @@ const WeaponStats* Rules::weapon(const std::string& name) const {
     w.range = int(std::strtod(ini_.get(name, "Range", "0").c_str(), nullptr) * 256.0);
     w.speed = std::min(255, std::max(1, ini_.getInt(name, "Speed", 100) * 256 / 100));
     w.warhead = warhead(ini_.get(name, "Warhead", ""));
+    w.report = ini_.get(name, "Report", "");
+    std::transform(w.report.begin(), w.report.end(), w.report.begin(),
+                   [](unsigned char c) { return char(std::tolower(c)); });
     std::string bullet = ini_.get(name, "Projectile", "");
     if (!bullet.empty()) {
         std::string image = ini_.get(bullet, "Image", "");

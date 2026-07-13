@@ -25,6 +25,14 @@ constexpr int kDx[8] = {1, 1, 0, -1, -1, -1, 0, 1};
 constexpr int kDy[8] = {0, 1, 1, 1, 0, -1, -1, -1};
 
 int cellCenter(int c) { return c * Sim::kLepton + Sim::kLepton / 2; }
+
+// Two houses are hostile if they differ and neither is the civilian "Neutral"
+// house. There is no alliance model yet, so any two named sides are enemies.
+bool housesEnemy(const std::string& a, const std::string& b) {
+    if (a == b || a == "Neutral" || b == "Neutral")
+        return false;
+    return true;
+}
 } // namespace
 
 int directionTo(int dx, int dy) {
@@ -242,6 +250,10 @@ void Sim::orderMove(const std::vector<int>& ids, int destCell) {
             continue;
         claimed[dest] = 1;
 
+        // A move order cancels any attack (ordered or auto-acquired).
+        u.targetUnit = u.targetStruct = -1;
+        u.autoTarget = false;
+
         // Drop any in-flight reservation before repathing.
         if (u.reservedCell >= 0 && occupant_[u.reservedCell] == u.id &&
             u.reservedCell != u.occCell)
@@ -262,6 +274,48 @@ void Sim::orderAttack(const std::vector<int>& ids, int targetUnit, int targetStr
             continue;
         u->targetUnit = targetUnit;
         u->targetStruct = targetStruct;
+        u->autoTarget = false; // explicit player order: chase, don't disengage
+    }
+}
+
+void Sim::tickAutoAcquire(Unit& u) {
+    // Only truly idle armed combatants scan: no target, no orders, not a
+    // harvester. This keeps guarding units at their post and lets units that
+    // just finished a move (or whose ordered target died) engage on their own.
+    if (u.hasTarget() || u.moving() || !u.path.empty() || u.harvester)
+        return;
+    const WeaponStats* w = u.stats.primary;
+    if (!w || w->range <= 0)
+        return;
+
+    long long bestD = (long long)w->range * w->range; // inclusive of edge
+    int bestUnit = -1, bestStruct = -1;
+    for (const auto& t : units_) {
+        if (t.id == u.id || t.hp <= 0 || !housesEnemy(u.house, t.house))
+            continue;
+        long long dx = t.x - u.x, dy = t.y - u.y;
+        long long d = dx * dx + dy * dy;
+        if (d <= bestD) {
+            bestD = d;
+            bestUnit = t.id;
+            bestStruct = -1;
+        }
+    }
+    for (const auto& s : structures_) {
+        if (s.hp <= 0 || !housesEnemy(u.house, s.house))
+            continue;
+        long long dx = s.cx() - u.x, dy = s.cy() - u.y;
+        long long d = dx * dx + dy * dy;
+        if (d <= bestD) {
+            bestD = d;
+            bestStruct = s.id;
+            bestUnit = -1;
+        }
+    }
+    if (bestUnit >= 0 || bestStruct >= 0) {
+        u.targetUnit = bestUnit;
+        u.targetStruct = bestStruct;
+        u.autoTarget = true;
     }
 }
 
@@ -271,6 +325,7 @@ void Sim::orderHarvest(const std::vector<int>& ids, int cell) {
         if (!u || !u->harvester)
             continue;
         u->targetUnit = u->targetStruct = -1;
+        u->autoTarget = false;
         u->harvMode = Unit::Harv::ToOre;
         u->harvCell = cell;
         u->harvTimer = 0;
@@ -698,6 +753,13 @@ bool Sim::tickCombat(Unit& u) {
     int desired = directionTo(dx, dy);
 
     if (dist > w->range) {
+        // Auto-acquired (guard) targets are not chased: a unit holds its
+        // post and simply drops the target once it leaves weapon range,
+        // re-scanning next tick for anything still nearby.
+        if (u.autoTarget) {
+            u.targetUnit = u.targetStruct = -1;
+            return false;
+        }
         // Chase: (re)path when we have no destination or the target strayed
         // more than a couple of cells from where we were headed.
         int tcell = (ty / kLepton) * kSize + (tx / kLepton);
@@ -753,6 +815,12 @@ bool Sim::tickCombat(Unit& u) {
         p.facing = desired;
         projectiles_.push_back(p);
         u.cooldown = w->rof;
+        Event ev;
+        ev.type = Event::Fire;
+        ev.x = u.x;
+        ev.y = u.y;
+        ev.weapon = w;
+        events_.push_back(ev);
     }
     return true;
 }
@@ -842,6 +910,7 @@ void Sim::killStructure(Structure& s) {
 }
 
 void Sim::tickUnit(Unit& u) {
+    tickAutoAcquire(u);
     if (tickCombat(u))
         return; // standing and fighting
     if (u.harvester)

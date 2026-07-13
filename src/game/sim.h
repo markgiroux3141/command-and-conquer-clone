@@ -42,6 +42,7 @@ public:
         int targetUnit = -1;   // unit id being attacked, -1 none
         int targetStruct = -1; // structure id being attacked, -1 none
         int cooldown = 0;      // ticks until the weapon may fire again
+        bool autoTarget = false; // target was auto-acquired (guard), not ordered
 
         // Harvester state.
         enum class Harv { None, ToOre, Harvest, ToRef, Unload };
@@ -104,11 +105,12 @@ public:
     // Things that happened during the last tick(); the shell turns these
     // into animations/sound. Cleared at the start of every tick.
     struct Event {
-        enum Type { Impact, UnitDied, StructDied, OreDepleted } type;
+        enum Type { Impact, UnitDied, StructDied, OreDepleted, Fire } type;
         int x = 0, y = 0;              // world leptons
         int cell = -1;                 // OreDepleted: cell to redraw
         int damage = 0;                // damage dealt (anim size selection)
         const WarheadStats* warhead = nullptr; // Impact only
+        const WeaponStats* weapon = nullptr;   // Fire only (for the report SFX)
         bool infantry = false;         // target was infantry
     };
 
@@ -218,6 +220,9 @@ public:
 private:
     int moveCost(int cell, SpeedClass cls, bool diagonal) const;
     void tickUnit(Unit& u);
+    // Idle armed unit locks onto the nearest enemy in weapon range (guard /
+    // return-fire). No-op if the unit already has a target or is busy.
+    void tickAutoAcquire(Unit& u);
     // Aim (body or turret) and fire at the target; true if u should not move.
     bool tickCombat(Unit& u);
     // Harvester gather/shuttle state machine; issues paths via the normal

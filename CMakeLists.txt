@@ -21,6 +21,7 @@ add_library(formats STATIC
 target_include_directories(formats PUBLIC src)
 
 add_library(game STATIC
+    src/game/audio.cpp
     src/game/house.cpp
     src/game/map.cpp
     src/game/render.cpp

@@ -57,6 +57,7 @@ struct WeaponStats {
     int speed = 255;         // projectile leptons/tick (Speed= * 256/100)
     const WarheadStats* warhead = nullptr;
     std::string projectileImage; // bullet art SHP name, empty = invisible
+    std::string report;          // Report= fire SFX (AUD base name), empty = silent
 };
 
 struct UnitStats {
