@@ -174,8 +174,16 @@ per-cell placement validity coloring, silo storage caps, selling/repair.
       are data-driven: `Report=` per weapon in `td_rules.ini` → `WeaponStats`.
 - [x] **Music jukebox** (scores): the render loop starts the next SCORES track
       when the current one ends (playlist aoi/ccthang/ind/ind2/fwp/heavyg).
-- [ ] EVA voice lines (ackno/affirm/etc. — `.v00-.v03` variants), sound
-      fade/pan by distance, per-unit acknowledgement on select/move.
+- [x] **EVA + unit acknowledgements** (2026-07-13, session 7): a single speech
+      channel (newest-wins, no overlap) plays unit voice responses on
+      select/move/attack (`.v00-.v03` variation files cycled for variety:
+      report1/vehic1, movout1, affirm1) and EVA computer lines on build events
+      (bldging1 on start, constru1/unitredy on the ready edge, cancel1, deploy1).
+      EVA speech ships only on the Covert Ops disc (`covert_ops/AUD1/SPEECH`,
+      like the cameos). Verified: voice + EVA AUDs decode through the shared
+      `fmt::AudFile` path; interactive launch stable. **Phase 8 audio complete.**
+- [ ] Sound fade/pan by on-screen distance (Sound_Effect pans by cell); more
+      EVA cues (low power, base under attack, insufficient funds, new options).
 - [ ] Main menu, in-game options, save/load
 
 ## Phase 9 — Map editor (side quest; can start any time after Phase 4)
@@ -356,11 +364,12 @@ carries the delta. Update this file's checkboxes *before* writing a handoff.
   passability**: the template table now carries per-template `land` + per-icon
   `altLand`/`altIcons` (generator parses ctor args 5/8 + `_slope*` lists);
   `bakeTerrainCell` sets per-cell land for TD. Verified: MCV/units ordered onto
-  water clamp to the shore; land paths still cross the map. (3) **Audio**: SDL
-  mixer + combat SFX + score jukebox (see Phase 8). Built clean, headless sim
-  unchanged/deterministic, interactive smoke-launch runs without crashing —
-  by-ear check pending on a real run. Known gaps: gunboat still immobile
-  (naval), EVA voices not wired, no win/lose/AI.
+  water clamp to the shore; land paths still cross the map. (3) **Audio (Phase 8
+  complete)**: SDL mixer + combat SFX + score jukebox, plus EVA computer lines
+  and unit voice acknowledgements on select/move/attack/build (see Phase 8).
+  Built clean, headless sim unchanged/deterministic, interactive smoke-launch
+  runs without crashing, all AUD types decode — by-ear check pending on a real
+  run. Known gaps: gunboat still immobile (naval), no win/lose/AI (Phase 7).
 - **2026-07-08 (session 5): Phase 6 complete.** Production stats in rules
   (Cost/TechLevel/Owner/Prerequisite/BuildSpeed/land Buildable=), sim
   production slots with drip payment + power scaling, prereq tree,

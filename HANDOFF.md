@@ -28,27 +28,23 @@ music jukebox)**. All build clean and the headless sim is unchanged/deterministi
 - **TD passability**: ground units no longer cross water/rock — they clamp to
   the shore. Per-cell land comes from the template table (`land` + per-icon
   `altLand`/`altIcons`), baked in `bakeTerrainCell`.
-- **Audio**: combat SFX (weapon fire via per-weapon `Report=`, impacts, deaths,
-  building crumble) + a SCORES music jukebox. Silent+no-op if no audio device.
-- Still a sandbox: no win/lose, no AI/base-building, no mission triggers, no EVA
-  voices. Gunboat is immobile (naval needs a contiguous water region).
+- **Audio (Phase 8 complete)**: combat SFX (weapon fire via per-weapon
+  `Report=`, impacts, deaths, building crumble) + a SCORES music jukebox + EVA
+  computer lines and unit voice acknowledgements (select/move/attack/build).
+  Silent+no-op if no audio device.
+- Still a sandbox: no win/lose, no AI/base-building, no mission triggers.
+  Gunboat is immobile (naval needs a contiguous water region).
 
 ## Next tasks (suggested order)
 
-1. **EVA voices + unit acknowledgements** (finishes Phase 8 audio): play
-   ackno/affirm/movout `.v00-.v03` variants on select/move/attack orders, and
-   EVA lines ("construction complete", "unit ready", "cannot deploy here") on
-   production/placement events. The mixer already supports it — add a
-   `playSound` for the `.v0N` variant files (pick a random variation) and emit
-   the right cue from the command handlers in `game_main.cpp`. **Verify by ear.**
-2. **Win/lose + a beatable mission** (Phase 7 start): simplest is
+1. **Win/lose + a beatable mission** (Phase 7 start): simplest is
    destroy-all-structures / lose-when-you-have-none; then read the mission INI
    `[Triggers]`/`[TeamTypes]` for real objectives. Pairs well with a minimal
    skirmish AI (build order + attack waves) so the placed-but-passive enemy
    actually does something beyond return fire.
-3. **Polish**: TD tiberium density/adjacency frames (currently frame 0 only) +
+2. **Polish**: TD tiberium density/adjacency frames (currently frame 0 only) +
    real harvest density; gunboat/naval water pathing; muzzle-flash anims; sound
-   fade/pan by on-screen distance.
+   fade/pan by on-screen distance; more EVA cues (low power, base under attack).
 
 ## Gotchas discovered this session (not all in code comments)
 
@@ -76,6 +72,13 @@ music jukebox)**. All build clean and the headless sim is unchanged/deterministi
   tnkfire3/gun8). Nod disc may differ — missing files just play silent.
 - SFX/music dirs are `<root>/SOUNDS` and `<root>/SCORES` (TD layout). RA would
   need different paths (degrades silent).
+- **EVA speech is Covert-Ops-only** — `<root>/../covert_ops/AUD1/SPEECH/*.aud`
+  (base gdi/nod discs omit it, same as the cameos). Unit voice responses ARE on
+  the base disc but use the `.v00-.v03` extension, not `.aud` (loaded via
+  `AudioMixer::playVoice`). EVA + unit voices share ONE speech channel
+  (`speech_`, newest-wins) so lines never overlap; SFX use the many-voice pool.
+  New EVA/voice cues go in the interactive command handlers in `game_main.cpp`
+  (the `mixer.playEva`/`playVoice` calls) — headless never opens the device.
 
 ## Verification recipe
 

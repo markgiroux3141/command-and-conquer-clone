@@ -294,6 +294,8 @@ int main(int argc, char** argv) {
         game::AudioMixer mixer;
         mixer.setSoundDir(root + "/SOUNDS");
         mixer.setMusicDir(root + "/SCORES");
+        // EVA speech ships only on the Covert Ops disc (like the cameos).
+        mixer.setEvaDir(root + "/../covert_ops/AUD1/SPEECH");
 
         // House->remap: TD builds its remap in code (placeholder band ->
         // per-house block); RA uses PALETTE.CPS. Cached by house name.
@@ -966,6 +968,8 @@ int main(int argc, char** argv) {
         static const char* kScores[] = {"aoi", "ccthang", "ind",
                                         "ind2", "fwp", "heavyg"};
         int musicIdx = 0;
+        // Tracks per-category production "ready" so EVA announces the edge once.
+        bool wasReady[int(game::Sim::ProdCat::Count)] = {};
 
         float camX = 0, camY = 0;
         const float kSpeed = 480.0f;
@@ -1047,6 +1051,8 @@ int main(int argc, char** argv) {
                                                          en->kind))
                                     std::printf("can't build %s (prerequisites?)\n",
                                                 en->type.c_str());
+                                else
+                                    mixer.playEva("bldging1"); // "building"
                             }
                         }
                     } else if (!placingType.empty()) {
@@ -1103,6 +1109,17 @@ int main(int argc, char** argv) {
                             }
                         }
                     }
+                    // Acknowledge a fresh selection with a unit response.
+                    int selCount = 0;
+                    bool selInf = false;
+                    for (const auto& su : sim.units())
+                        if (su.selected) {
+                            if (!selCount)
+                                selInf = su.infantry;
+                            selCount++;
+                        }
+                    if (selCount)
+                        mixer.playVoice(selInf ? "report1" : "vehic1", selInf ? 4 : 2);
                 }
                 if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_RIGHT &&
                     e.button.x >= viewW) {
@@ -1112,6 +1129,7 @@ int main(int argc, char** argv) {
                         const auto* p = sim.production(playerHouse, cat);
                         if (p && p->type == en->type) {
                             sim.cancelProduction(playerHouse, cat);
+                            mixer.playEva("cancel1"); // "canceled"
                             if (placingType == en->type)
                                 placingType.clear();
                         }
@@ -1149,6 +1167,8 @@ int main(int argc, char** argv) {
                                         if (sid >= 0)
                                             addStructDrawable("fact", playerHouse,
                                                               mcvCell - 1 - kSize, sid);
+                                        else
+                                            mixer.playEva("deploy1"); // can't deploy here
                                     }
                                     deployed = true;
                                     break;
@@ -1168,9 +1188,10 @@ int main(int argc, char** argv) {
                         int cell = cellY * kSize + cellX;
                         if (ids.empty() || deployed)
                             ; // nothing selected (or the click deployed an MCV)
-                        else if (tu >= 0 || ts >= 0)
+                        else if (tu >= 0 || ts >= 0) {
                             sim.orderAttack(ids, tu, ts);
-                        else if (sim.oreAt(cell) > 0) {
+                            mixer.playVoice("affirm1", 4); // "affirmative"
+                        } else if (sim.oreAt(cell) > 0) {
                             // Harvesters gather; anyone else just drives there.
                             std::vector<int> harv, rest;
                             for (int id : ids)
@@ -1180,10 +1201,23 @@ int main(int argc, char** argv) {
                                 sim.orderHarvest(harv, cell);
                             if (!rest.empty())
                                 sim.orderMove(rest, cell);
-                        } else
+                            mixer.playVoice("movout1", 4); // "movin' out"
+                        } else {
                             sim.orderMove(ids, cell);
+                            mixer.playVoice("movout1", 4); // "movin' out"
+                        }
                     }
                 }
+            }
+
+            // EVA: announce production completion on the ready edge (player house).
+            for (int c = 0; c < int(game::Sim::ProdCat::Count); c++) {
+                const auto* p = sim.production(playerHouse, game::Sim::ProdCat(c));
+                bool ready = p && p->ready;
+                if (ready && !wasReady[c])
+                    mixer.playEva(c == int(game::Sim::ProdCat::Building) ? "constru1"
+                                                                        : "unitredy");
+                wasReady[c] = ready;
             }
 
             // No in-game font yet: surface credits/power in the title bar.

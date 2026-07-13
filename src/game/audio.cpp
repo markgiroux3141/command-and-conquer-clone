@@ -86,14 +86,14 @@ void AudioMixer::shutdown() {
     dev_ = 0;
 }
 
-const AudioMixer::Sound* AudioMixer::load(const std::string& dir, const std::string& name) {
-    std::string key = dir + "/" + name;
+const AudioMixer::Sound* AudioMixer::load(const std::string& dir, const std::string& file) {
+    std::string key = dir + "/" + file;
     auto it = cache_.find(key);
     if (it != cache_.end())
         return it->second.pcm.empty() ? nullptr : &it->second;
     Sound s;
     try {
-        fmt::AudFile aud = fmt::AudFile::load(key + ".aud");
+        fmt::AudFile aud = fmt::AudFile::load(key);
         s.pcm = resample(toMono16(aud), aud.sampleRate, rate_);
     } catch (...) {
         // Cache the failure (empty pcm) so we don't retry the disk every shot.
@@ -105,7 +105,7 @@ const AudioMixer::Sound* AudioMixer::load(const std::string& dir, const std::str
 void AudioMixer::playSound(const std::string& name, int volume) {
     if (!dev_ || name.empty())
         return;
-    const Sound* s = load(soundDir_, name);
+    const Sound* s = load(soundDir_, name + ".aud");
     if (!s)
         return;
     SDL_LockAudioDevice(dev_);
@@ -113,10 +113,33 @@ void AudioMixer::playSound(const std::string& name, int volume) {
     SDL_UnlockAudioDevice(dev_);
 }
 
+void AudioMixer::playSpeech(const std::string& dir, const std::string& file) {
+    if (!dev_)
+        return;
+    const Sound* s = load(dir, file);
+    if (!s)
+        return;
+    SDL_LockAudioDevice(dev_);
+    speech_ = {&s->pcm, 0, 255}; // newest line replaces the current one
+    SDL_UnlockAudioDevice(dev_);
+}
+
+void AudioMixer::playEva(const std::string& name) {
+    if (!name.empty())
+        playSpeech(evaDir_, name + ".aud");
+}
+
+void AudioMixer::playVoice(const std::string& name, int variations) {
+    if (name.empty() || variations <= 0)
+        return;
+    int v = voiceCycle_++ % variations; // 0..variations-1
+    playSpeech(soundDir_, name + ".v0" + char('0' + v));
+}
+
 void AudioMixer::playMusic(const std::string& name) {
     if (!dev_ || name.empty())
         return;
-    const Sound* s = load(musicDir_, name);
+    const Sound* s = load(musicDir_, name + ".aud");
     SDL_LockAudioDevice(dev_);
     music_ = {s ? &s->pcm : nullptr, 0, 255};
     musicActive_.store(s != nullptr);
@@ -143,6 +166,13 @@ void AudioMixer::mix(int16_t* out, int frames) {
             music_ = {};
             musicActive_.store(false);
         }
+    }
+    // Speech (EVA / unit voice): a single channel at full volume.
+    if (speech_.pcm) {
+        for (int i = 0; i < frames && speech_.pos < speech_.pcm->size(); i++, speech_.pos++)
+            out[i] = int16_t(std::clamp(out[i] + (*speech_.pcm)[speech_.pos], -32768, 32767));
+        if (speech_.pos >= speech_.pcm->size())
+            speech_ = {};
     }
     for (auto& v : voices_) {
         for (int i = 0; i < frames && v.pos < v.pcm->size(); i++, v.pos++) {
