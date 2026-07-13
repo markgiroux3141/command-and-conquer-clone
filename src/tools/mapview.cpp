@@ -13,6 +13,7 @@
 #include <SDL.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -29,6 +30,7 @@
 #include "game/house.h"
 #include "game/map.h"
 #include "game/render.h"
+#include "game/td_template_table.h"
 #include "game/template_table.h"
 
 namespace {
@@ -57,6 +59,13 @@ bool flagArg(int argc, char** argv, const char* name) {
 }
 
 std::string theaterDirName(const game::MapFile& map) {
+    if (map.game == game::Game::TiberianDawn) {
+        if (map.theater == "DESERT")
+            return "DESERT";
+        if (map.theater == "WINTER")
+            return "WINTER";
+        return "TEMPERAT"; // note: dir is truncated, palette base is "temperat"
+    }
     if (map.theater == "SNOW")
         return "snow";
     if (map.theater == "INTERIOR")
@@ -184,11 +193,49 @@ int main(int argc, char** argv) {
         int scale = intArg(argc, argv, "--scale", 1);
         bool full = flagArg(argc, argv, "--full");
 
-        std::string localDir = root + "/INSTALL/REDALERT/local";
-        auto pal = fmt::Palette::load(localDir + "/" + map.theaterPalette() + ".pal");
-        auto remaps = game::buildRemaps(localDir + "/palette.cps");
-        ArtCache art(root + "/MAIN/" + theaterDirName(map), root + "/MAIN/conquer",
-                     root + "/INSTALL/REDALERT/hires", map.theaterExt());
+        bool isTd = map.game == game::Game::TiberianDawn;
+        std::string theaterDir, conquerDir, hiresDir, palPath;
+        std::array<game::RemapTable, size_t(game::PlayerColor::Count)> remaps{};
+        bool haveRemaps = false;
+        if (isTd) {
+            // TD layout: <root>/<THEATER>/, unit art in <root>/CONQUER/,
+            // palette alongside the theater art.
+            theaterDir = root + "/" + theaterDirName(map);
+            conquerDir = root + "/CONQUER";
+            hiresDir = conquerDir;
+            palPath = theaterDir + "/" + map.theaterPalette() + ".pal";
+        } else {
+            std::string localDir = root + "/INSTALL/REDALERT/local";
+            theaterDir = root + "/MAIN/" + theaterDirName(map);
+            conquerDir = root + "/MAIN/conquer";
+            hiresDir = root + "/INSTALL/REDALERT/hires";
+            palPath = localDir + "/" + map.theaterPalette() + ".pal";
+            remaps = game::buildRemaps(localDir + "/palette.cps");
+            haveRemaps = true;
+        }
+        auto pal = fmt::Palette::load(palPath);
+        ArtCache art(theaterDir, conquerDir, hiresDir, map.theaterExt());
+
+        // House->remap: RA colors come from palette.cps; TD builds its remap in
+        // code (placeholder band 176-191 -> per-house block), cached by name.
+        std::unordered_map<std::string, game::RemapTable> tdRemaps;
+        auto remapFor = [&](const std::string& house) -> const game::RemapTable* {
+            if (isTd) {
+                auto it = tdRemaps.find(house);
+                if (it == tdRemaps.end())
+                    it = tdRemaps.emplace(house, game::tdRemap(house)).first;
+                return &it->second;
+            }
+            if (!haveRemaps)
+                return nullptr;
+            return &remaps[size_t(game::houseColor(house))];
+        };
+        // Template id -> art base name, per game's template table.
+        auto templateArt = [&](uint16_t id) -> const char* {
+            if (isTd)
+                return id < game::kTdTemplateCount ? game::kTdTemplateTable[id].name : nullptr;
+            return id < game::kTemplateCount ? game::kTemplateTable[id].name : nullptr;
+        };
 
         std::printf("%s: theater %s, bounds %d,%d %dx%d, %zu units, %zu infantry, "
                     "%zu structures\n",
@@ -220,8 +267,10 @@ int main(int argc, char** argv) {
 
                 const fmt::TmpFile* t = nullptr;
                 int icon = 0;
-                if (cell.templateId != 0xffff && cell.templateId < game::kTemplateCount) {
-                    t = art.tmp(game::kTemplateTable[cell.templateId].name);
+                const char* tname = cell.templateId != 0xffff ? templateArt(cell.templateId)
+                                                              : nullptr;
+                if (tname && tname[0]) {
+                    t = art.tmp(tname);
                     icon = cell.icon;
                     if (!t) {
                         missingTemplates++;
@@ -243,7 +292,7 @@ int main(int argc, char** argv) {
             std::printf("note: %d cells reference missing template art (magenta)\n",
                         missingTemplates);
 
-        // ---- Overlay layer ----
+        // ---- Overlay layer (Red Alert) ----
         // Frame selection per CELL.CPP: ore/gems by adjacent-resource count
         // (Tiberium_Adjust), walls by N/E/S/W same-wall bitmask (Wall_Update).
         auto overlayAt = [&](int mx, int my) -> int {
@@ -255,7 +304,7 @@ int main(int argc, char** argv) {
         auto isWall = [](int o) {
             return o == 0 || o == 1 || o == 2 || o == 3 || o == 4 || o == 23 || o == 24;
         };
-        for (int cy = 0; cy < ch; cy++) {
+        for (int cy = 0; !isTd && cy < ch; cy++) {
             for (int cx = 0; cx < cw; cx++) {
                 int mapX = cx0 + cx, mapY = cy0 + cy;
                 int o = overlayAt(mapX, mapY);
@@ -294,6 +343,27 @@ int main(int argc, char** argv) {
             }
         }
 
+        // ---- Overlay layer (Tiberian Dawn) ----
+        // TD overlay is a cell->art-name list (tiberium ti1-ti12, walls,
+        // crates); draw frame 0 of each. Density/wall-adjacency frames come
+        // later with the TD economy pass.
+        if (isTd) {
+            for (const auto& ov : map.tdOverlay) {
+                const fmt::ShpFile* s = art.shp(ov.name);
+                if (!s || s->frames.empty())
+                    continue;
+                int ocx = ov.cell % game::MapFile::kSize - cx0;
+                int ocy = ov.cell / game::MapFile::kSize - cy0;
+                if (ocx < 0 || ocx >= cw || ocy < 0 || ocy >= ch)
+                    continue;
+                game::BlitOptions opts;
+                opts.colorKey = true;
+                opts.shadow = true;
+                blitIndexed(mc, s->frames[0].data(), s->width, s->height, ocx * kTile,
+                            ocy * kTile, pal, opts);
+            }
+        }
+
         // ---- Terrain objects (trees, mines) ----
         for (const auto& obj : map.terrain) {
             const fmt::ShpFile* s = art.shp(obj.name);
@@ -325,7 +395,7 @@ int main(int argc, char** argv) {
             auto [px, py] = cellPx(s.cell);
             o.x = px;
             o.y = py;
-            o.remap = &remaps[size_t(game::houseColor(s.house))];
+            o.remap = remapFor(s.house);
             o.selectable = true;
             o.health = s.health;
             objects.push_back(o);
@@ -352,7 +422,7 @@ int main(int argc, char** argv) {
             auto [px, py] = cellPx(u.cell);
             o.x = px + kTile / 2 - shp->width / 2; // centered in cell
             o.y = py + kTile / 2 - shp->height / 2;
-            o.remap = &remaps[size_t(game::houseColor(u.house))];
+            o.remap = remapFor(u.house);
             o.selectable = true;
             o.health = u.health;
             objects.push_back(o);
@@ -379,7 +449,7 @@ int main(int argc, char** argv) {
             auto [px, py] = cellPx(inf.cell);
             o.x = px + kSubX[sub] - shp->width / 2;
             o.y = py + kSubY[sub] - shp->height / 2;
-            o.remap = &remaps[size_t(game::houseColor(inf.house))];
+            o.remap = remapFor(inf.house);
             o.selectable = true;
             o.health = inf.health;
             objects.push_back(o);

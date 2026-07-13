@@ -15,6 +15,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
+#include <filesystem>
 #include <stdexcept>
 
 namespace game {
@@ -102,12 +104,73 @@ std::string toUpper(std::string s) {
     return s;
 }
 
+// Split a comma-separated object line, trimming surrounding spaces per field.
+std::vector<std::string> splitCsv(const std::string& s) {
+    std::vector<std::string> out;
+    size_t start = 0;
+    while (start <= s.size()) {
+        size_t comma = s.find(',', start);
+        if (comma == std::string::npos)
+            comma = s.size();
+        std::string field = s.substr(start, comma - start);
+        while (!field.empty() && field.front() == ' ')
+            field.erase(field.begin());
+        while (!field.empty() && field.back() == ' ')
+            field.pop_back();
+        out.push_back(field);
+        start = comma + 1;
+    }
+    return out;
+}
+
+// Parse [UNITS]/[SHIPS]/[INFANTRY]/[STRUCTURES] lines. Field order (shared by
+// both games): UNITS/SHIPS house,type,health,cell,facing,mission,trigger;
+// INFANTRY house,type,health,cell,subcell,mission,facing,trigger; STRUCTURES
+// house,type,health,cell,facing,trigger. cellFn maps a raw INI cell index to
+// the engine's 128-wide grid index (identity for RA, 64->128 for TD).
+template <typename CellFn>
+void parseObjects(const fmt::IniFile& ini, const char* section,
+                  std::vector<MapFile::Object>& out, bool isInfantry, CellFn cellFn) {
+    const auto* sec = ini.section(section);
+    if (!sec)
+        return;
+    for (const auto& [key, value] : sec->entries) {
+        auto f = splitCsv(value);
+        if (f.size() < 5)
+            continue;
+        MapFile::Object obj;
+        obj.house = f[0];
+        obj.type = toLower(f[1]);
+        obj.health = std::stoi(f[2]);
+        int rawCell = std::stoi(f[3]);
+        obj.cell = cellFn(rawCell);
+        if (isInfantry) {
+            obj.subcell = std::stoi(f[4]);
+            obj.facing = f.size() > 6 ? std::stoi(f[6]) : 0;
+        } else {
+            obj.facing = std::stoi(f[4]);
+        }
+        if (obj.cell >= 0 && obj.cell < MapFile::kSize * MapFile::kSize)
+            out.push_back(std::move(obj));
+    }
+}
+
+MapFile loadTd(fmt::IniFile& ini, const std::string& iniPath);
+
 } // namespace
 
 MapFile MapFile::load(const std::string& iniPath) {
     fmt::IniFile ini = fmt::IniFile::load(iniPath);
 
+    // Tiberian Dawn maps have no packed [MapPack]; terrain lives in a sibling
+    // .bin. Detect by section, then fall back to the .bin's presence.
+    std::filesystem::path binPath = iniPath;
+    binPath.replace_extension(".bin");
+    if (!ini.section("MapPack") && std::filesystem::exists(binPath))
+        return loadTd(ini, iniPath);
+
     MapFile map;
+    map.game = Game::RedAlert;
     map.theater = toUpper(ini.get("Map", "Theater", "TEMPERATE"));
     map.x = ini.getInt("Map", "X");
     map.y = ini.getInt("Map", "Y");
@@ -134,54 +197,11 @@ MapFile MapFile::load(const std::string& iniPath) {
     for (size_t i = 0; i < total; i++)
         map.cells[i].overlay = overlayData[i];
 
-    // Comma-separated object lines. Field order per the original Read_INI
-    // code: UNITS/SHIPS house,type,health,cell,facing,mission,trigger;
-    // INFANTRY house,type,health,cell,subcell,mission,facing,trigger;
-    // STRUCTURES house,type,health,cell,facing,trigger,...
-    auto split = [](const std::string& s) {
-        std::vector<std::string> out;
-        size_t start = 0;
-        while (start <= s.size()) {
-            size_t comma = s.find(',', start);
-            if (comma == std::string::npos)
-                comma = s.size();
-            std::string field = s.substr(start, comma - start);
-            while (!field.empty() && field.front() == ' ')
-                field.erase(field.begin());
-            while (!field.empty() && field.back() == ' ')
-                field.pop_back();
-            out.push_back(field);
-            start = comma + 1;
-        }
-        return out;
-    };
-    auto parseObjects = [&](const char* section, std::vector<Object>& out, bool isInfantry) {
-        const auto* sec = ini.section(section);
-        if (!sec)
-            return;
-        for (const auto& [key, value] : sec->entries) {
-            auto f = split(value);
-            if (f.size() < 5)
-                continue;
-            Object obj;
-            obj.house = f[0];
-            obj.type = toLower(f[1]);
-            obj.health = std::stoi(f[2]);
-            obj.cell = std::stoi(f[3]);
-            if (isInfantry) {
-                obj.subcell = std::stoi(f[4]);
-                obj.facing = f.size() > 6 ? std::stoi(f[6]) : 0;
-            } else {
-                obj.facing = std::stoi(f[4]);
-            }
-            if (obj.cell >= 0 && obj.cell < int(total))
-                out.push_back(std::move(obj));
-        }
-    };
-    parseObjects("UNITS", map.units, false);
-    parseObjects("SHIPS", map.units, false);
-    parseObjects("INFANTRY", map.infantry, true);
-    parseObjects("STRUCTURES", map.structures, false);
+    auto identity = [](int c) { return c; };
+    parseObjects(ini, "UNITS", map.units, false, identity);
+    parseObjects(ini, "SHIPS", map.units, false, identity);
+    parseObjects(ini, "INFANTRY", map.infantry, true, identity);
+    parseObjects(ini, "STRUCTURES", map.structures, false, identity);
 
     if (const auto* terrain = ini.section("TERRAIN")) {
         for (const auto& [key, value] : terrain->entries) {
@@ -196,7 +216,91 @@ MapFile MapFile::load(const std::string& iniPath) {
     return map;
 }
 
+namespace {
+
+// Tiberian Dawn map loader. Terrain is a sibling .bin of 64x64 cells, each two
+// bytes: template id then icon index (template 0xff = clear). Overlay, terrain
+// objects and pre-placed units live in INI sections keyed/valued by TD's
+// 64-wide cell numbering. We place it all into the top-left 64x64 of the
+// engine's 128-wide grid so the renderer/sim stay unchanged.
+MapFile loadTd(fmt::IniFile& ini, const std::string& iniPath) {
+    MapFile map;
+    map.game = Game::TiberianDawn;
+    map.theater = toUpper(ini.get("Map", "Theater", "TEMPERATE"));
+    map.x = ini.getInt("Map", "X");
+    map.y = ini.getInt("Map", "Y");
+    map.width = ini.getInt("Map", "Width");
+    map.height = ini.getInt("Map", "Height");
+
+    constexpr size_t total = size_t(MapFile::kSize) * MapFile::kSize;
+    map.cells.assign(total, {});
+
+    // TD cell index (0..4095) -> engine 128-grid index.
+    auto tdCell = [](int c) {
+        int x = c % MapFile::kTdSize, y = c / MapFile::kTdSize;
+        return y * MapFile::kSize + x;
+    };
+
+    std::filesystem::path binPath = iniPath;
+    binPath.replace_extension(".bin");
+    std::FILE* f = std::fopen(binPath.string().c_str(), "rb");
+    if (!f)
+        throw std::runtime_error("map: cannot open " + binPath.string());
+    std::vector<uint8_t> bin(size_t(MapFile::kTdSize) * MapFile::kTdSize * 2);
+    size_t got = std::fread(bin.data(), 1, bin.size(), f);
+    std::fclose(f);
+    if (got < bin.size())
+        throw std::runtime_error("map: short .bin: " + binPath.string());
+    for (int y = 0; y < MapFile::kTdSize; y++) {
+        for (int x = 0; x < MapFile::kTdSize; x++) {
+            size_t src = size_t(y * MapFile::kTdSize + x) * 2;
+            uint8_t type = bin[src], icon = bin[src + 1];
+            auto& cell = map.cells[y * MapFile::kSize + x];
+            cell.templateId = (type == 0xff) ? 0xffff : type;
+            cell.icon = icon;
+        }
+    }
+
+    auto identity = tdCell;
+    parseObjects(ini, "UNITS", map.units, false, identity);
+    parseObjects(ini, "INFANTRY", map.infantry, true, identity);
+    parseObjects(ini, "STRUCTURES", map.structures, false, identity);
+
+    // [OVERLAY] cell=NAME (tiberium ti1-ti12, walls, crates).
+    if (const auto* overlay = ini.section("OVERLAY")) {
+        for (const auto& [key, value] : overlay->entries) {
+            MapFile::TerrainObject obj;
+            obj.cell = tdCell(std::stoi(key));
+            obj.name = toLower(value);
+            if (obj.cell >= 0 && obj.cell < int(total))
+                map.tdOverlay.push_back(std::move(obj));
+        }
+    }
+    // [TERRAIN] cell=NAME,... (trees, rocks). Value may carry a trailing
+    // action after a comma; keep only the art name.
+    if (const auto* terrain = ini.section("TERRAIN")) {
+        for (const auto& [key, value] : terrain->entries) {
+            MapFile::TerrainObject obj;
+            obj.cell = tdCell(std::stoi(key));
+            obj.name = toLower(splitCsv(value)[0]);
+            if (obj.cell >= 0 && obj.cell < int(total))
+                map.terrain.push_back(std::move(obj));
+        }
+    }
+
+    return map;
+}
+
+} // namespace
+
 std::string MapFile::theaterExt() const {
+    if (game == Game::TiberianDawn) {
+        if (theater == "DESERT")
+            return ".des";
+        if (theater == "WINTER")
+            return ".win";
+        return ".tem"; // TEMPERATE
+    }
     if (theater == "SNOW")
         return ".sno";
     if (theater == "INTERIOR")
@@ -205,6 +309,13 @@ std::string MapFile::theaterExt() const {
 }
 
 std::string MapFile::theaterPalette() const {
+    if (game == Game::TiberianDawn) {
+        if (theater == "DESERT")
+            return "desert";
+        if (theater == "WINTER")
+            return "winter";
+        return "temperat";
+    }
     if (theater == "SNOW")
         return "snow";
     if (theater == "INTERIOR")

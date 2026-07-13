@@ -19,3 +19,7 @@ tools/sdl2.zip
 # Scratch
 *.bmp
 __pycache__/
+
+# Generated visualizations — derived from copyrighted game art, personal use
+# only (regenerate with tools/render_td.py). Never commit.
+renders/

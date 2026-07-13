@@ -177,7 +177,77 @@ skirmish maps are just INI files in `general/`.
 - [ ] Playable-bounds editing, [Waypoints] (start positions), map INI metadata
 - [ ] Smart terrain brushes (auto-pick shore/cliff transition pieces) — v2
 
-Out of scope for now: multiplayer, VQA-driven campaign FMVs, TD support (later).
+Out of scope for now: multiplayer, VQA-driven campaign FMVs.
+
+## Phase 10 — Tiberian Dawn pivot 🚧 (started 2026-07-13)
+
+Goal: retarget the engine from Red Alert to the original 1995 **Tiberian Dawn**
+aesthetic (per user: "use this version instead"). Full pivot — RA-specific paths
+may bit-rot. TD assets were already extracted in Phase 0 (`data/assets/
+tiberian_dawn/{gdi,nod,covert_ops}`). Formats mostly shared with RA; the
+divergences are the work.
+
+- [x] TD template table generator (`tools/gen_td_template_table.py` →
+      `src/game/td_template_table.h`, 216 templates from TD DEFINES.H/CDATA.CPP,
+      cross-checked vs OpenRA cnc tilesets) (2026-07-13)
+- [x] TD `.bin` map loader (`map.cpp` `loadTd`): 64×64 grid, 2 bytes/cell
+      (template,icon), template 0xff=clear; [OVERLAY]/[TERRAIN]/object sections;
+      loaded into top-left of the 128-grid so sim/render stay unchanged.
+      Auto-detected in `MapFile::load` (no [MapPack] + sibling .bin) (2026-07-13)
+- [x] TD TMP decoder branch (`tmp.cpp`): magic 0x0d1affff, imgStart@12,
+      indexEnd@24, indexStart@28, no land-type map (2026-07-13)
+- [x] TD theater plumbing: theaters DESERT/TEMPERATE/WINTER, exts .des/.tem/.win,
+      dirs TEMPERAT/DESERT/WINTER, palette per theater; `mapview` game-aware data
+      layout (root/<THEATER>, root/CONQUER) + template table + TD overlay pass
+      (2026-07-13)
+- [x] **Verified: full missions render in all three theaters** — scg01ea
+      (temperate landing beach), scb03ea (Nod desert base: Temple/Hand/refinery/
+      airstrip/obelisks + village), scg08ea (winter, frozen rivers + bridges).
+      100% template/art pass, zero missing art (2026-07-13)
+- [x] TD house-color remap (`house.cpp` `tdRemap`/`tdHouseIndex`): TD art carries
+      the player color in a placeholder band at palette indices 176-191; each
+      house remaps that band to the exact targets from CONST.CPP
+      (RemapYellow/Red/BlueGreen/Orange/Green/Blue). GoodGuy=gold, BadGuy=red
+      (source default is Blue — we use Red per the GDI-gold/Nod-red convention),
+      multi houses = distinct colors. Wired into `mapview` remapFor (cached by
+      house). Verified: scb03ea shows gold/red/blue unit groups (2026-07-13)
+- [x] Local render tool `tools/render_td.py` → `renders/*.png` (gitignored;
+      derived from copyrighted art). Default set = one mission per theater
+      (2026-07-13)
+- [x] TD unit/structure stats: authored `td_rules.ini` (committed) in the RA
+      rules.ini format the loader already reads — land movement sections,
+      warheads (SA/HE/AP/Fire/Laser), weapons, and the core TD roster
+      (vehicles/infantry/structures) with classic TD stats. game.exe loads it
+      for TD (`--rules` overrides) (2026-07-13)
+- [x] **`game.exe` TD support + PLAYABLE** (2026-07-13): mirrored the mapview
+      pivot (TD data layout, td template table, TD overlay pass, tdRemap,
+      td_rules.ini, TD build lists, GoodGuy/BadGuy side). Sidebar cameos come
+      from the Covert Ops CONQUER (`root/../covert_ops/CONQUER` — base discs omit
+      `<type>icon.shp`). Verified headless on scg01ea: MCV pathfinds/moves, GDI
+      e1 chases + shoots Nod e1 (50→35hp, M16 SA), gun turrets are attackable
+      sim structures; --ui-shot shows the desert Nod base + populated sidebar.
+- [ ] Polish/known gaps (not blocking play):
+      - Passability defaults to Clear (units cross water/rock). Fix: emit TD
+        template Land= in the template table (TD LandType order == our Land) and
+        set per-cell land in bake, like RA's control-map path.
+      - TD tiberium overlay draws frame 0 only (no density/adjacency frames);
+        harvest uses a flat BailCount.
+      - td_rules.ini is a compact hand-port; refine values / add missing
+        types (aircraft, gunboat, more structures) as needed.
+      - TD production build-chain not yet play-tested (sidebar populates; sim
+        production is the shared RA path).
+      - TD `mouse.shp` isn't ShpD2 format → OS cursor fallback. Structures show
+        little house color (TD art is mostly pre-colored; only the 176-191 band
+        remaps — expected).
+      - mapview still uses `root/CONQUER` only (no covert_ops icon fallback);
+        fine since it doesn't draw cameos.
+
+Gotchas learned: TD template IDs are single bytes (RA=u16); 0xff=clear (TD has
+no icon-index quirk like RA's 0/255). TD maps are 64-wide — object/overlay cell
+numbers use that width, remapped to the engine's 128 grid on load. TD theater
+dir is truncated `TEMPERAT` but palette base is `temperat`. TD TMP has no land
+control map, so sim passability must come from the template table, not the tile.
+House names: GoodGuy=GDI, BadGuy=Nod, Neutral=civilian.
 
 ---
 
@@ -241,6 +311,21 @@ carries the delta. Update this file's checkboxes *before* writing a handoff.
   determinism confirmed (identical run hashes). Movement regressions pass
   (55,75 exact; water order settles 48,77). Next: Phase 6 (production) or
   Phase 9 (map editor); infantry death anims + auto-acquire are known gaps.
+- **2026-07-13 (session 6): Phase 10 (Tiberian Dawn pivot) — PLAYABLE.**
+  User wants the original 1995 TD aesthetic instead of RA ("use this version
+  instead"). TD assets were already extracted (Phase 0). Built: TD template
+  table generator (`gen_td_template_table.py` → `td_template_table.h`), TD `.bin`
+  map loader (`map.cpp loadTd`, 64×64 into the 128-grid), TD TMP decoder branch
+  (`tmp.cpp`, magic 0x0d1affff), theater plumbing (desert/temperate/winter),
+  TD house-color remap from CONST.CPP bands (`house.cpp tdRemap`, GDI gold/Nod
+  red), authored `td_rules.ini` (TD ships none), and full `game.exe` TD support
+  (data layout, td template table, TD overlay, build lists, Covert-Ops cameo
+  fallback). `tools/render_td.py` writes gitignored `renders/*.png`. Verified:
+  all 3 theaters render; scg01ea plays headless (MCV pathfinds, GDI e1 shoots
+  Nod e1 50→35hp); interactive window + populated sidebar via --ui-shot; the
+  user confirmed it runs. `play.bat` now launches TD (auto-detects disc).
+  Sandbox-level: no enemy AI/return-fire, no win/lose, no audio, passability
+  defaults to Clear. Next: enemy auto-acquire, TD passability, audio (Phase 8).
 - **2026-07-08 (session 5): Phase 6 complete.** Production stats in rules
   (Cost/TechLevel/Owner/Prerequisite/BuildSpeed/land Buildable=), sim
   production slots with drip payment + power scaling, prereq tree,

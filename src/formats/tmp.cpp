@@ -1,13 +1,18 @@
-// RA terrain template decoder, ported from OpenRA's TmpRALoader.cs (GPL v3).
+// Terrain template decoder for both Red Alert and Tiberian Dawn, ported from
+// OpenRA's TmpRALoader.cs / TmpTDLoader.cs (GPL v3). The two games use
+// different header layouts, distinguished by magic; both then share the same
+// index-table + raw-pixel scheme (one byte per slot = image number or 0xFF).
 //
-// Header (little-endian):
-//   0  u16 tile width (24)      2  u16 tile height (24)
-//   4  ...                     16  u32 imgStart (pixel data)
-//   20 u32 zero, 24 u16 ?, 26 u16 magic 0x2c73
-//   28 s32 indexEnd            36  s32 indexStart
-//   32 u32 colorMap (land-type control byte per slot, IControl_Type::ColorMap)
-// Index: one byte per template slot, image number or 0xFF for empty.
-// Pixels: raw, imgStart + imageNumber * w * h.
+// Red Alert header (little-endian):
+//   0  u16 width   2  u16 height   16 u32 imgStart
+//   20 u32 zero, 26 u16 magic 0x2c73
+//   28 s32 indexEnd   36 s32 indexStart
+//   32 u32 colorMap (land-type byte per slot, IControl_Type::ColorMap)
+//
+// Tiberian Dawn header (little-endian):
+//   0  u16 width   2  u16 height   12 u32 imgStart
+//   16 u32 zero, 20 u32 magic 0x0d1affff
+//   24 s32 indexEnd   28 s32 indexStart   (no land-type map)
 
 #include "formats/tmp.h"
 
@@ -30,23 +35,28 @@ TmpFile TmpFile::load(const std::string& path) {
 
     if (data.size() < 40)
         throw std::runtime_error("TMP too short: " + path);
-    if (u32(20) != 0 || u16(26) != 0x2c73)
-        throw std::runtime_error("not an RA TMP (bad magic): " + path);
+
+    bool isRa = u32(20) == 0 && u16(26) == 0x2c73;
+    bool isTd = u32(16) == 0 && u32(20) == 0x0d1affff;
+    if (!isRa && !isTd)
+        throw std::runtime_error("not a TMP template (bad magic): " + path);
 
     TmpFile tmp;
     tmp.tileWidth = u16(0);
     tmp.tileHeight = u16(2);
     size_t tileSize = size_t(tmp.tileWidth) * tmp.tileHeight;
-    uint32_t imgStart = u32(16);
-    uint32_t indexEnd = u32(28);
-    uint32_t indexStart = u32(36);
+    uint32_t imgStart = isTd ? u32(12) : u32(16);
+    uint32_t indexEnd = isTd ? u32(24) : u32(28);
+    uint32_t indexStart = isTd ? u32(28) : u32(36);
     if (tileSize == 0 || indexStart > indexEnd || indexEnd > data.size())
         throw std::runtime_error("TMP header out of range: " + path);
 
-    uint32_t colorMap = u32(32);
-    uint32_t slots = indexEnd - indexStart;
-    if (colorMap && colorMap + slots <= data.size())
-        tmp.landBytes.assign(data.begin() + colorMap, data.begin() + colorMap + slots);
+    if (isRa) {
+        uint32_t colorMap = u32(32);
+        uint32_t slots = indexEnd - indexStart;
+        if (colorMap && colorMap + slots <= data.size())
+            tmp.landBytes.assign(data.begin() + colorMap, data.begin() + colorMap + slots);
+    }
 
     for (uint32_t i = indexStart; i < indexEnd; i++) {
         uint8_t b = data[i];

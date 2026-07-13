@@ -31,4 +31,15 @@ std::array<RemapTable, size_t(PlayerColor::Count)> buildRemaps(const std::string
 // ...), per HDATA.CPP. Unknown names get Gold (the Neutral color).
 PlayerColor houseColor(const std::string& houseName);
 
+// --- Tiberian Dawn house colors ---
+// TD's HousesType index for a scenario house name (GoodGuy=0/GDI, BadGuy=1/Nod,
+// Neutral=2, Special/JP=3, Multi1..6=4..9). Unknown names return 0.
+int tdHouseIndex(const std::string& houseName);
+
+// TD unit/structure art carries the player color in a placeholder band at
+// palette indices 176-191; each house remaps that band to the 16-color block
+// at (houseIndex+11)*16 (DisplayClass::One_Time). Returns a 256-entry table,
+// identity outside the band. No PALETTE.CPS needed (TD builds this in code).
+RemapTable tdRemap(const std::string& houseName);
+
 } // namespace game

@@ -1,94 +1,91 @@
-# Handoff — session 5 → session 6 (written 2026-07-08)
+# Handoff — session 6 → session 7 (written 2026-07-13)
 
-Session 5 completed **all of Phase 6** (production): sidebar with real
-cameos, build queues with drip-paid credits and prerequisite gating,
-structure placement with adjacency, and MCV deploy. Phases 0-6 are done.
+Session 6 pivoted the engine from Red Alert to the original 1995 **Tiberian
+Dawn** aesthetic (user: "use this version instead") and got it **playable**.
+Phase 10 is well underway; see MILESTONES.md "Phase 10" for the full checklist.
 
 ## Read first
 
-1. `MILESTONES.md` — checkboxes + per-phase gotchas are current.
-2. `README.md` — build commands, `game.exe` usage.
-3. Only then source: `src/game/sim.{h,cpp}` (movement/combat/harvest/
-   production), `src/game/rules.{h,cpp}`, `src/game_main.cpp` (shell:
-   sidebar, placement, orders, effects). formats/render/map/house are all
-   verified — don't re-read.
+1. `MILESTONES.md` — Phase 10 section (done items + the "Polish/known gaps" list
+   is the backlog) and the session-6 log entry.
+2. `README.md` / `play.bat` — how to run.
+3. Then source, only as needed for the next task:
+   - `src/game_main.cpp` — the shell; TD support is an `isTd` branch through the
+     setup (data layout, `templateArt`, `remapFor`), the terrain/overlay bake,
+     build lists, and sides. This is where most TD gameplay work lands.
+   - `src/game/sim.{h,cpp}` — movement/combat/harvest/production (shared RA+TD).
+   - `src/game/map.cpp` (`loadTd`), `src/game/house.cpp` (`tdRemap`),
+     `src/formats/tmp.cpp` (TD branch) — verified, don't re-read unless touching.
 
-## Current state
+## Current state (what compiles / plays)
 
-- Compiles clean: `cmake --build build --config Release` (MSVC).
-- Interactive: sidebar on the right (structures | units cameo columns,
-  wheel-scrolls). Click a cameo to build (needs fact/barr|tent/weap);
-  yellow progress bar on the cameo; buildings get a green border when
-  ready — click the cameo again to enter placement (footprint ghost,
-  green/red), right-click in the world cancels placement, right-click the
-  cameo cancels production with refund. Units auto-spawn below their
-  factory. Right-click an own selected MCV to deploy into a fact.
-  `--credits N` (default 3000) seeds the player house.
-- Sim owns all of it deterministically: one production slot per category
-  (Building/Infantry/Vehicle) per house; ticks = Cost × BuildSpeed(0.8) ×
-  900/1000 at full power; credits paid as progress advances (stalls when
-  broke, cancel refunds); low power scales speed by powerFraction with a
-  16/256 floor. Prereqs checked against owned structures (barr↔tent
-  equivalent); weap's prereq is proc.
-- Not yet played eyes-on beyond a one-frame `--ui-shot` screenshot —
-  a real interactive playthrough (build a base, make tanks, fight) is the
-  best first move next session.
+- Builds clean: `cmake --build build --config Release` (MSVC). Targets:
+  `game_exe`→game.exe, `mapview`, `shpview`, etc.
+- **TD is playable**: `play.bat` (auto-detects disc from map name: scg*→gdi,
+  scb*→nod, scm*→either). Default `play` = GDI mission 1. Select (click/drag),
+  move/attack (right-click), build from the sidebar, deploy MCV, harvest.
+- Renders correct in all three theaters; GDI gold / Nod red house colors.
+- `tools/render_td.py` → `renders/*.png` (gitignored) for eyeballing maps.
+- **It's a sandbox**: enemies are placed but passive (no auto-acquire / no AI),
+  no win/lose, no triggers, no audio. Passability defaults to Clear (units cross
+  water/rock). `td_rules.ini` is a compact hand-port of TD stats.
 
-## Next task: Phase 7 (AI & missions) or Phase 9 (map editor)
+## Next tasks (suggested order — highest gameplay payoff first)
 
-Phase 7 order suggestion: unit auto-acquire (fire at enemies in range
-without orders — combat already supports targets, just needs a scan) →
-skirmish AI (build order from the production API + attack waves) →
-triggers/teamtypes for missions. Auto-acquire is also the quickest win for
-making fights feel real.
+1. **Enemy return-fire (auto-acquire)** — units fire at in-range enemies without
+   orders. Combat already supports targets (`sim.orderAttack`); add a per-tick
+   scan for the nearest enemy in weapon range when a unit is idle. This is the
+   single biggest "feels like a game" win and is the top gap. Applies to RA too.
+2. **TD passability** — stop the water/rock-walking. Emit the template `Land=`
+   into `td_template_table.h` (extend `gen_td_template_table.py`: the 5th ctor
+   arg in CDATA.CPP is `LAND_*`; TD `LandType` order == our `game::Land`), then
+   in `game_main.cpp bakeTerrainCell` set per-cell land from the template land
+   for TD (mirror the RA `landBytes`/`landFromControl` path). mapview too if you
+   want the debug view accurate.
+3. **Audio (Phase 8)** — assets + decoder exist (`src/formats/aud.cpp`, TD
+   `SCORES/`=music, `SOUNDS/`=SFX+EVA). Wire SDL audio: AUD→PCM, play SFX on sim
+   events (fire/impact/death/build), EVA lines, and a music jukebox from SCORES.
+4. **Play-test + refine TD production** (sidebar populates; the build chain uses
+   the shared RA production path — verify prereqs/costs feel right, tune
+   `td_rules.ini`). Then skirmish AI and mission triggers for a beatable mission.
 
-## Gotchas not in MILESTONES.md
+## Gotchas discovered this session (not all in code comments)
 
-- `--build/--place/--deploy` (headless) retry every tick until accepted, so
-  order flags freely: `--deploy 7 --build b,powr --place 35,89` works even
-  though the fact doesn't exist at tick 0. `--place` args are consumed FIFO
-  as buildings become ready. Unit indexes = initial unit list order.
-- `Sim::deployMcv` and unit death **erase** from `units_` — any `Unit*`
-  held across such calls dangles (copy house/cell first; two call sites in
-  game_main already learned this).
-- `startProduction` rejects when: slot busy, cost<=0, missing factory,
-  missing prereq. It does NOT reserve credits — payment is per-progress in
-  `tickProduction`.
-- The sidebar build lists (`kStructTypes/kInfTypes/kVehTypes` in
-  game_main.cpp) are hardcoded candidates filtered by rules Owner/TechLevel
-  and icon art existence. Add types there if something seems missing.
-- Placement validity = every footprint cell `Buildable=` land, unblocked,
-  unoccupied + touching a friendly structure (Adjacent=1 for everything;
-  real RA walls use Adjacent=8).
-- fact footprint comes from fact.shp cell bounds (3×3 on snow); deploy
-  places its top-left one cell up-left of the MCV's cell.
-- `--ui-shot out.bmp` opens the real window for one frame and saves it —
-  the only current way to screenshot the sidebar.
-- Verification runs from session 4 (combat/harvest) now print an extra
-  `house Greece credits 3000` line because of the --credits default; the
-  determinism-hash recipe still works within a version.
+- TD template IDs are single **bytes** (RA=u16); `0xff`=clear. TD `.bin` is
+  64×64, 2 bytes/cell (template,icon), interleaved; loaded into the top-left of
+  the 128-grid so sim/render stay 128-wide. Object/overlay cell numbers are
+  64-wide, remapped on load (`map.cpp loadTd`).
+- TD theater **dir** is truncated `TEMPERAT` but the **palette** base is
+  `temperat`; theater art exts are `.des/.tem/.win`.
+- TD **TMP** has no land-control map (RA does) — that's why passability needs
+  the template `Land=` instead (task 2).
+- TD **cameos** (`<type>icon.shp`) ship only on the **Covert Ops** disc, not the
+  base gdi/nod CONQUER. game.exe uses `root/../covert_ops/CONQUER` as the
+  fallback art dir for TD (`hiresDir`). mapview does NOT (doesn't draw cameos).
+- TD house remap: art carries player color in palette band **176–191**; each
+  house remaps it to a CONST.CPP band. GDI=RemapYellow (identity/gold), Nod
+  (BadGuy) we map to **RemapRed** (source default is actually Blue — we chose
+  red per the GDI-gold/Nod-red convention; one-line switch in `house.cpp`).
+  Most TD building art is pre-colored, so house color is a small accent — normal.
+- TD `mouse.shp` is NOT ShpD2 format → cursor load throws, falls back to OS
+  cursor (harmless). A TD-cursor decoder is a nice-to-have.
+- Houses: GoodGuy=GDI, BadGuy=Nod, Neutral=civilian. Side for owner-filtering:
+  GoodGuy→gdi, BadGuy→nod (`game_main.cpp`).
 
 ## Verification recipe
 
-Full production chain (scu04eb is a Soviet mission with a starting MCV,
-unit index 7):
-
 ```
-build\Release\game.exe data\assets\red_alert\allied\MAIN\general\scu04eb.ini ^
-  data\assets\red_alert\allied --house USSR --no-shroud --sim-ticks 5000 ^
-  --deploy 7 --credits 10000 --build b,powr --build b,barr --build b,proc ^
-  --build b,weap --build i,e1 --build v,3tnk ^
-  --place 35,89 --place 35,92 --place 29,89 --place 29,92
-```
+# Headless movement + combat (should path the MCV and damage the Nod e1):
+build\Release\game.exe data\assets\tiberian_dawn\gdi\GENERAL\scg01ea.ini ^
+  data\assets\tiberian_dawn\gdi --house GoodGuy --no-shroud --sim-ticks 400 ^
+  --attack 2,6 --dump out.bmp --scale 2
+# Expect: unit 2 (GDI e1) ends "(attacking)" near unit 6; unit 6 hp 50 -> ~35.
 
-Expect: deploy tick 0; powr placed tick 216 (300×0.72); barr 433; proc
-1874; weap 3315 (2000-cost = 1440 ticks each); "started building e1" right
-after barr and a USSR e1 appears near 36,94; 3tnk starts after weap and
-spawns near 30,94; final line `house USSR credits 4350 power 100/80`.
-Combat/harvest recipes: see session-4 notes in MILESTONES + `--attack`,
-`--harvest` flags (jeep kills e1 in 4 shots; harvest round trip = 700).
+# Visual set (writes renders/*.png):  python tools/render_td.py
+# Interactive:  play                (or:  play scb03ea BadGuy 5000)
+```
 
 ## Context handoff protocol
 
-At ~75% context: update MILESTONES.md checkboxes + session log, rewrite this
-file for the next session, commit and push.
+At ~75% context: tick MILESTONES.md, add a session-log entry, rewrite this file
+for the next session, commit and push.

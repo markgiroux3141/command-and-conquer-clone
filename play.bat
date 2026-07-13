@@ -1,10 +1,12 @@
 @echo off
-rem Launch the RA clone with sensible defaults.
+rem Launch the Tiberian Dawn clone with sensible defaults.
 rem
-rem   play                      Soviet sandbox (scu04eb, starting MCV, 10k credits)
-rem   play scg01ea Greece      pick another mission + house
-rem   play scu04eb USSR 5000   ... + starting credits
-rem   play scu04eb USSR 10000 --no-shroud   extra game.exe flags pass through
+rem   play                          GDI mission 1 (scg01ea), GoodGuy, 5000 credits
+rem   play scb03ea BadGuy           pick another mission + house (GoodGuy|BadGuy)
+rem   play scg08ea GoodGuy 8000     ... + starting credits
+rem   play scg01ea GoodGuy 5000 --no-shroud   extra game.exe flags pass through
+rem
+rem Map naming: scg* = GDI missions, scb* = Nod missions, scm* = multiplayer.
 setlocal
 cd /d "%~dp0"
 
@@ -15,15 +17,20 @@ if not exist "%EXE%" (
 )
 
 set "MAP=%~1"
-if "%MAP%"=="" set "MAP=scu04eb"
+if "%MAP%"=="" set "MAP=scg01ea"
 set "HOUSE=%~2"
-if "%HOUSE%"=="" set "HOUSE=USSR"
+if "%HOUSE%"=="" set "HOUSE=GoodGuy"
 set "CREDITS=%~3"
-if "%CREDITS%"=="" set "CREDITS=10000"
+if "%CREDITS%"=="" set "CREDITS=5000"
 
-set "MAPFILE=data\assets\red_alert\allied\MAIN\general\%MAP%.ini"
-if not exist "%MAPFILE%" (
-    echo map not found: %MAPFILE%
+rem Find which disc holds this map (GDI missions live on the gdi disc, Nod on
+rem nod, expansion maps on covert_ops).
+set "ROOT="
+if exist "data\assets\tiberian_dawn\gdi\GENERAL\%MAP%.ini" set "ROOT=data\assets\tiberian_dawn\gdi"
+if not defined ROOT if exist "data\assets\tiberian_dawn\nod\GENERAL\%MAP%.ini" set "ROOT=data\assets\tiberian_dawn\nod"
+if not defined ROOT if exist "data\assets\tiberian_dawn\covert_ops\GENERAL\%MAP%.ini" set "ROOT=data\assets\tiberian_dawn\covert_ops"
+if not defined ROOT (
+    echo map not found on any disc: %MAP%.ini
     exit /b 1
 )
 
@@ -32,4 +39,4 @@ if not "%~1"=="" shift
 if not "%~1"=="" shift
 if not "%~1"=="" shift
 
-"%EXE%" "%MAPFILE%" data\assets\red_alert\allied --house %HOUSE% --credits %CREDITS% %1 %2 %3 %4 %5 %6
+"%EXE%" "%ROOT%\GENERAL\%MAP%.ini" "%ROOT%" --house %HOUSE% --credits %CREDITS% %1 %2 %3 %4 %5 %6

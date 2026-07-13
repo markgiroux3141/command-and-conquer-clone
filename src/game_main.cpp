@@ -14,6 +14,7 @@
 #include <SDL.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdio>
 #include <cstring>
@@ -34,6 +35,7 @@
 #include "game/render.h"
 #include "game/rules.h"
 #include "game/sim.h"
+#include "game/td_template_table.h"
 #include "game/template_table.h"
 
 namespace {
@@ -65,6 +67,13 @@ bool flagArg(int argc, char** argv, const char* name) {
 }
 
 std::string theaterDirName(const game::MapFile& map) {
+    if (map.game == game::Game::TiberianDawn) {
+        if (map.theater == "DESERT")
+            return "DESERT";
+        if (map.theater == "WINTER")
+            return "WINTER";
+        return "TEMPERAT";
+    }
     if (map.theater == "SNOW")
         return "snow";
     if (map.theater == "INTERIOR")
@@ -180,6 +189,15 @@ const char* kVehTypes[] = {"harv", "mcv",  "jeep", "apc",  "1tnk", "2tnk",
                            "3tnk", "4tnk", "arty", "v2rl", "ftrk", "dtrk",
                            "mnly", "mgg",  "mrj",  "ttnk"};
 
+// Tiberian Dawn build lists (type codes from the TD roster).
+const char* kTdStructTypes[] = {"nuke", "nuk2", "proc", "silo", "pyle", "hand",
+                                "weap", "hq",   "fix",  "hpad", "afld", "gun",
+                                "gtwr", "atwr", "obli", "sam",  "tmpl"};
+const char* kTdInfTypes[] = {"e1", "e2", "e3", "e4", "e5", "rmbo"};
+const char* kTdVehTypes[] = {"mcv",  "htnk", "mtnk", "ltnk", "ftnk", "stnk",
+                             "bggy", "jeep", "bike", "apc",  "arty", "msam",
+                             "harv"};
+
 bool isSovietHouse(const std::string& house) {
     return house == "USSR" || house == "Ukraine" || house == "BadGuy";
 }
@@ -242,12 +260,54 @@ int main(int argc, char** argv) {
         int scale = intArg(argc, argv, "--scale", 1);
         int simTicks = intArg(argc, argv, "--sim-ticks", -1);
 
-        std::string localDir = root + "/INSTALL/REDALERT/local";
-        auto pal = fmt::Palette::load(localDir + "/" + map.theaterPalette() + ".pal");
-        auto remaps = game::buildRemaps(localDir + "/palette.cps");
-        ArtCache art(root + "/MAIN/" + theaterDirName(map), root + "/MAIN/conquer",
-                     root + "/INSTALL/REDALERT/hires", map.theaterExt());
-        auto rules = game::Rules::load(localDir + "/rules.ini");
+        bool isTd = map.game == game::Game::TiberianDawn;
+        std::string theaterDir, conquerDir, hiresDir, palPath, rulesPath;
+        std::array<game::RemapTable, size_t(game::PlayerColor::Count)> remaps{};
+        bool haveRemaps = false;
+        if (isTd) {
+            theaterDir = root + "/" + theaterDirName(map);
+            conquerDir = root + "/CONQUER";
+            // Sidebar cameos (<type>icon.shp) ship only on the Covert Ops disc,
+            // not the base GDI/Nod CONQUER; use it as the fallback art dir.
+            hiresDir = root + "/../covert_ops/CONQUER";
+            palPath = theaterDir + "/" + map.theaterPalette() + ".pal";
+            // TD has no rules.ini; use our authored stats (override with --rules).
+            rulesPath = strArg(argc, argv, "--rules") ? strArg(argc, argv, "--rules")
+                                                      : "td_rules.ini";
+        } else {
+            std::string localDir = root + "/INSTALL/REDALERT/local";
+            theaterDir = root + "/MAIN/" + theaterDirName(map);
+            conquerDir = root + "/MAIN/conquer";
+            hiresDir = root + "/INSTALL/REDALERT/hires";
+            palPath = localDir + "/" + map.theaterPalette() + ".pal";
+            rulesPath = localDir + "/rules.ini";
+            remaps = game::buildRemaps(localDir + "/palette.cps");
+            haveRemaps = true;
+        }
+        auto pal = fmt::Palette::load(palPath);
+        ArtCache art(theaterDir, conquerDir, hiresDir, map.theaterExt());
+        auto rules = game::Rules::load(rulesPath);
+
+        // House->remap: TD builds its remap in code (placeholder band ->
+        // per-house block); RA uses PALETTE.CPS. Cached by house name.
+        std::unordered_map<std::string, game::RemapTable> tdRemaps;
+        auto remapFor = [&](const std::string& house) -> const game::RemapTable* {
+            if (isTd) {
+                auto it = tdRemaps.find(house);
+                if (it == tdRemaps.end())
+                    it = tdRemaps.emplace(house, game::tdRemap(house)).first;
+                return &it->second;
+            }
+            if (!haveRemaps)
+                return nullptr;
+            return &remaps[size_t(game::houseColor(house))];
+        };
+        // Template id -> art base name, per game's template table.
+        auto templateArt = [&](uint16_t id) -> const char* {
+            if (isTd)
+                return id < game::kTdTemplateCount ? game::kTdTemplateTable[id].name : nullptr;
+            return id < game::kTemplateCount ? game::kTemplateTable[id].name : nullptr;
+        };
 
         std::printf("%s: theater %s, bounds %d,%d %dx%d, %zu units, %zu infantry, "
                     "%zu structures\n",
@@ -271,8 +331,9 @@ int main(int argc, char** argv) {
         game::Sim sim;
         sim.setRules(&rules);
         // Shroud is drawn from this house's point of view.
-        std::string playerHouse = strArg(argc, argv, "--house")
-                                      ? strArg(argc, argv, "--house") : "Greece";
+        std::string playerHouse = strArg(argc, argv, "--house") ? strArg(argc, argv, "--house")
+                                  : isTd                        ? "GoodGuy"
+                                                                : "Greece";
         if (!flagArg(argc, argv, "--no-shroud"))
             sim.setPlayerHouse(playerHouse);
 
@@ -284,8 +345,10 @@ int main(int argc, char** argv) {
 
             const fmt::TmpFile* t = nullptr;
             int icon = 0;
-            if (cell.templateId != 0xffff && cell.templateId < game::kTemplateCount) {
-                t = art.tmp(game::kTemplateTable[cell.templateId].name);
+            const char* tname =
+                cell.templateId != 0xffff ? templateArt(cell.templateId) : nullptr;
+            if (tname && tname[0]) {
+                t = art.tmp(tname);
                 icon = cell.icon;
                 if (!t) {
                     game::fillRect(mc, dx, dy, kTile, kTile, 0xffff00ff);
@@ -319,7 +382,7 @@ int main(int argc, char** argv) {
         auto isWall = [](int o) {
             return o == 0 || o == 1 || o == 2 || o == 3 || o == 4 || o == 23 || o == 24;
         };
-        for (int cy = 0; cy < ch; cy++) {
+        for (int cy = 0; !isTd && cy < ch; cy++) {
             for (int cx = 0; cx < cw; cx++) {
                 int mapX = cx0 + cx, mapY = cy0 + cy;
                 int o = overlayAt(mapX, mapY);
@@ -364,6 +427,33 @@ int main(int argc, char** argv) {
             }
         }
 
+        // ---- Overlay layer (Tiberian Dawn): tiberium (ti1-12), walls, crates ----
+        if (isTd) {
+            for (const auto& ov : map.tdOverlay) {
+                int ocx = ov.cell % kSize, ocy = ov.cell / kSize;
+                if (ocx < cx0 || ocx >= cx0 + cw || ocy < cy0 || ocy >= cy0 + ch)
+                    continue;
+                bool tib = ov.name.size() >= 2 && ov.name[0] == 't' && ov.name[1] == 'i';
+                bool wall = ov.name == "sbag" || ov.name == "cycl" || ov.name == "brik" ||
+                            ov.name == "barb" || ov.name == "wood";
+                if (tib) {
+                    sim.setLand(ov.cell, game::Land::Ore);
+                    sim.setOre(ov.cell, rules.bailCount(), false);
+                } else if (wall) {
+                    sim.setLand(ov.cell, game::Land::Wall);
+                    sim.setBlocked(ov.cell);
+                }
+                const fmt::ShpFile* s = art.shp(ov.name);
+                if (!s || s->frames.empty())
+                    continue;
+                game::BlitOptions opts;
+                opts.colorKey = true;
+                opts.shadow = true;
+                blitIndexed(mc, s->frames[0].data(), s->width, s->height,
+                            (ocx - cx0) * kTile, (ocy - cy0) * kTile, pal, opts);
+            }
+        }
+
         // ---- Terrain objects (trees, mines): draw + block footprint ----
         // Approximation: blocks the SHP's cell bounds (the original uses
         // per-type occupy lists from TDATA.CPP).
@@ -402,7 +492,7 @@ int main(int argc, char** argv) {
             o.shp = shp;
             o.x = (cell % kSize - cx0) * kTile;
             o.y = (cell / kSize - cy0) * kTile;
-            o.remap = &remaps[size_t(game::houseColor(house))];
+            o.remap = remapFor(house);
             o.selectable = true;
             o.structId = sid;
             structures.push_back(o);
@@ -435,7 +525,9 @@ int main(int argc, char** argv) {
         // ---- Production setup: starting credits + sidebar build lists ----
         sim.setCredits(playerHouse, intArg(argc, argv, "--credits", 3000));
         int techLevel = intArg(argc, argv, "--tech", 16);
-        std::string side = isSovietHouse(playerHouse) ? "soviet" : "allies";
+        std::string side = isTd ? (playerHouse == "BadGuy" ? "nod" : "gdi")
+                           : isSovietHouse(playerHouse) ? "soviet"
+                                                        : "allies";
         std::vector<BuildEntry> buildStructs, buildUnits;
         auto addBuildable = [&](const char* type, game::UnitKind kind) {
             const auto& st = rules.unit(type, kind);
@@ -450,11 +542,19 @@ int main(int argc, char** argv) {
                 .push_back({type, kind, icon});
         };
         for (const char* t : kStructTypes)
-            addBuildable(t, game::UnitKind::Structure);
+            if (!isTd) addBuildable(t, game::UnitKind::Structure);
         for (const char* t : kInfTypes)
-            addBuildable(t, game::UnitKind::Infantry);
+            if (!isTd) addBuildable(t, game::UnitKind::Infantry);
         for (const char* t : kVehTypes)
-            addBuildable(t, game::UnitKind::Vehicle);
+            if (!isTd) addBuildable(t, game::UnitKind::Vehicle);
+        if (isTd) {
+            for (const char* t : kTdStructTypes)
+                addBuildable(t, game::UnitKind::Structure);
+            for (const char* t : kTdInfTypes)
+                addBuildable(t, game::UnitKind::Infantry);
+            for (const char* t : kTdVehTypes)
+                addBuildable(t, game::UnitKind::Vehicle);
+        }
 
         // ---- Sim units from the scenario ----
         for (const auto& u : map.units) {
@@ -500,7 +600,7 @@ int main(int argc, char** argv) {
             }
             o.x = u.x * kTile / game::Sim::kLepton - cx0 * kTile - shp->width / 2;
             o.y = u.y * kTile / game::Sim::kLepton - cy0 * kTile - shp->height / 2;
-            o.remap = &remaps[size_t(game::houseColor(u.house))];
+            o.remap = remapFor(u.house);
             o.selectable = true;
             o.health = u.healthFrac();
             o.selected = u.selected;
@@ -811,7 +911,7 @@ int main(int argc, char** argv) {
         SDL_ShowCursor(SDL_DISABLE);
         std::optional<fmt::ShpD2File> cursor;
         try {
-            cursor = fmt::ShpD2File::load(root + "/INSTALL/REDALERT/hires/mouse.shp");
+            cursor = fmt::ShpD2File::load((isTd ? conquerDir : hiresDir) + "/mouse.shp");
         } catch (const std::exception& ex) {
             std::printf("note: no cursor art (%s), using OS cursor\n", ex.what());
             SDL_ShowCursor(SDL_ENABLE);

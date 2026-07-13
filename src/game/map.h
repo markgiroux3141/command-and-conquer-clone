@@ -5,11 +5,19 @@
 
 namespace game {
 
-// A Red Alert scenario/skirmish map loaded from its INI file.
-// The terrain grid is always 128x128 cells; [Map] X/Y/Width/Height give the
-// playable bounds within it.
+// Which classic game a map came from. Determines the template table, theater
+// art layout, and cell-numbering width used when the map was authored.
+enum class Game { RedAlert, TiberianDawn };
+
+// A scenario/skirmish map loaded from its INI file (Red Alert or Tiberian
+// Dawn). The terrain grid is always 128x128 cells; [Map] X/Y/Width/Height give
+// the playable bounds. Tiberian Dawn maps are 64x64 and are loaded into the
+// top-left quadrant, so the rest of the engine can stay 128-wide.
 struct MapFile {
     static constexpr int kSize = 128;
+    static constexpr int kTdSize = 64; // Tiberian Dawn native map width
+
+    Game game = Game::RedAlert;
 
     struct Cell {
         uint16_t templateId = 0xffff; // 0xffff = clear
@@ -27,6 +35,10 @@ struct MapFile {
         std::string name; // art name, e.g. "t01", "tc04" (SHP with theater ext)
     };
     std::vector<TerrainObject> terrain;
+
+    // Tiberian Dawn overlay (tiberium, walls, crates) as cell+art-name entries.
+    // Red Alert stores overlay per-cell in Cell::overlay instead.
+    std::vector<TerrainObject> tdOverlay;
 
     // Pre-placed objects from [UNITS]/[INFANTRY]/[STRUCTURES]/[SHIPS].
     struct Object {
