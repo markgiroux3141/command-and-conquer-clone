@@ -42,6 +42,32 @@ void blitIndexed(Canvas& c, const uint8_t* src, int sw, int sh, int dx, int dy,
     }
 }
 
+void blitIndexedScaled(Canvas& c, const uint8_t* src, int sw, int sh, int dx,
+                       int dy, int dw, int dh, const fmt::Palette& pal,
+                       const BlitOptions& opts) {
+    if (dw <= 0 || dh <= 0)
+        return;
+    for (int y = 0; y < dh; y++) {
+        int ty = dy + y;
+        if (ty < 0 || ty >= c.h)
+            continue;
+        int sy = y * sh / dh;
+        for (int x = 0; x < dw; x++) {
+            int tx = dx + x;
+            if (tx < 0 || tx >= c.w)
+                continue;
+            uint8_t idx = src[sy * sw + (x * sw / dw)];
+            if (opts.colorKey && idx == 0)
+                continue;
+            if (opts.remap)
+                idx = (*opts.remap)[idx];
+            auto col = pal.colors[idx];
+            c.px[ty * c.pitch + tx] =
+                0xff000000 | (uint32_t(col.r) << 16) | (uint32_t(col.g) << 8) | col.b;
+        }
+    }
+}
+
 void fillRect(Canvas& c, int dx, int dy, int w, int h, uint32_t argb) {
     for (int y = dy; y < dy + h; y++) {
         if (y < 0 || y >= c.h)

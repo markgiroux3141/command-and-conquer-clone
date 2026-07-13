@@ -343,7 +343,9 @@ int main(int argc, char** argv) {
         };
         std::optional<fmt::FntFile> font6 = loadFont(fontDir + "/6point.fnt");
         std::optional<fmt::FntFile> font8 = loadFont(fontDir + "/8point.fnt");
-        if (!font6)
+        // 8point is the compact, legible HUD face; 6point (larger) is a fallback.
+        const std::optional<fmt::FntFile>& hudFont = font8.has_value() ? font8 : font6;
+        if (!hudFont)
             std::printf("note: no HUD font at %s (text disabled)\n", fontDir.c_str());
 
         // Sound mixer: opened only for the interactive window (init() below);
@@ -1341,7 +1343,7 @@ int main(int argc, char** argv) {
             for (const auto& o : objects)
                 drawObject(wc, o, pal, int(camX), int(camY));
             // Numeric health % above selected units/structures.
-            if (font6)
+            if (hudFont)
                 for (const auto& o : objects)
                     if (o.selected && o.selectable) {
                         int pct = std::clamp(o.health * 100 / 256, 0, 100);
@@ -1350,10 +1352,10 @@ int main(int argc, char** argv) {
                                       : pct > 33 ? 0xffe0e030
                                                  : 0xffff3030;
                         int tx = o.x - int(camX) + o.shp->width / 2 -
-                                 game::textWidth(*font6, s) / 2;
+                                 game::textWidth(*hudFont, s) / 2;
                         int ty = o.y - int(camY) - 13;
-                        game::drawText(wc, *font6, s, tx + 1, ty + 1, 0xff000000);
-                        game::drawText(wc, *font6, s, tx, ty, hc);
+                        game::drawText(wc, *hudFont, s, tx + 1, ty + 1, 0xff000000);
+                        game::drawText(wc, *hudFont, s, tx, ty, hc);
                     }
             drawEffects(wc, int(camX), int(camY));
             drawShroud(wc, int(camX), int(camY));
@@ -1372,14 +1374,14 @@ int main(int argc, char** argv) {
                                        (cellY + by - cy0) * kTile - int(camY),
                                        kTile, kTile, col);
                 // "<NAME> $<cost>" label following the cursor.
-                if (font6) {
+                if (hudFont) {
                     std::string lbl = placingType;
                     for (auto& ch : lbl)
                         ch = char(std::toupper((unsigned char)ch));
                     int cost = rules.unit(placingType, game::UnitKind::Structure).cost;
                     lbl += " $" + std::to_string(cost);
-                    game::drawText(wc, *font6, lbl, mx + 13, my + 1, 0xff000000);
-                    game::drawText(wc, *font6, lbl, mx + 12, my, kText);
+                    game::drawText(wc, *hudFont, lbl, mx + 13, my + 1, 0xff000000);
+                    game::drawText(wc, *hudFont, lbl, mx + 12, my, kText);
                 }
             }
 
@@ -1416,14 +1418,22 @@ int main(int argc, char** argv) {
                     blip(u.cell(), u.house);
             game::drawRect(wc, irx - 1, iry - 1, irw + 2, irh + 2, faction);
 
-            // REPAIR | SELL | MAP button row (visual for now).
-            int byRow = kTopBar + kRadarH + 2, bw = (kSidebarW - 8) / 3;
+            // REPAIR | SELL | MAP button row (visual for now). Buttons are sized
+            // to their labels so the text never overflows the narrow sidebar.
+            int byRow = kTopBar + kRadarH + 2;
             const char* btns[] = {"REPAIR", "SELL", "MAP"};
+            int tw[3], natural = 0;
             for (int b = 0; b < 3; b++) {
-                int bx = viewW + 4 + b * bw;
-                bevelPanel(wc, bx, byRow, bw - 1, kBtnH, kFace);
-                drawTextCentered(wc, font6, btns[b], bx, bw - 1, byRow + 2, kText,
-                                 /*spacing=*/0);
+                tw[b] = hudFont ? game::textWidth(*hudFont, btns[b], 0) : 24;
+                natural += tw[b] + 6; // 3px padding each side
+            }
+            int gap = std::max(1, (kSidebarW - 8 - natural) / 2);
+            int bx = viewW + 4;
+            for (int b = 0; b < 3; b++) {
+                int w = tw[b] + 6;
+                bevelPanel(wc, bx, byRow, w, kBtnH, kFace);
+                drawTextCentered(wc, hudFont, btns[b], bx, w, byRow + 2, kText, 0);
+                bx += w + gap;
             }
 
             // Halve a region's brightness (like the SHP shadow table) to mark
@@ -1442,23 +1452,25 @@ int main(int argc, char** argv) {
                     if (ey + kCameoH < kSideTop - kCameoH || ey >= winH)
                         continue;
                     const auto& en = *list[i];
-                    blitIndexed(wc, en.icon->frames[0].data(), en.icon->width,
-                                en.icon->height, ex, ey, pal);
+                    // TD cameos are 32x24 — scale to fill the 64x48 slot.
+                    blitIndexedScaled(wc, en.icon->frames[0].data(), en.icon->width,
+                                      en.icon->height, ex, ey, kCameoW, kCameoH, pal);
                     const auto* p = sim.production(playerHouse, prodCatOf(en.kind));
                     bool building = p && p->type == en.type;
                     // Darken cameos you can't yet afford (unless already building).
                     if (!building &&
                         sim.credits(playerHouse) < rules.unit(en.type, en.kind).cost)
                         darken(ex, ey, kCameoW, kCameoH);
-                    // Cost label (bottom of the cameo) with a 1px black shadow.
+                    // Cost label (bottom-right of the cameo) with a 1px shadow.
                     int cost = rules.unit(en.type, en.kind).cost;
-                    if (font6 && cost > 0) {
+                    if (hudFont && cost > 0) {
                         std::string s = "$" + std::to_string(cost);
-                        int tx = ex + kCameoW - game::textWidth(*font6, s) - 2;
-                        game::drawText(wc, *font6, s, tx + 1, ey + kCameoH - 9, 0xff000000);
-                        game::drawText(wc, *font6, s, tx, ey + kCameoH - 10, kGreen);
+                        int tx = ex + kCameoW - game::textWidth(*hudFont, s) - 2;
+                        int ty = ey + kCameoH - hudFont->maxHeight;
+                        game::drawText(wc, *hudFont, s, tx + 1, ty + 1, 0xff000000);
+                        game::drawText(wc, *hudFont, s, tx, ty, kGreen);
                     }
-                    // Recessed bezel around the cameo.
+                    // Raised bezel around the filled slot.
                     game::drawRect(wc, ex - 1, ey - 1, kCameoW + 2, kCameoH + 2, kDark);
                     if (building) {
                         game::fillRect(wc, ex, ey + kCameoH - 4,
@@ -1470,25 +1482,38 @@ int main(int argc, char** argv) {
                     }
                 }
             };
-            // Clip cameos to below the button row so they don't bleed over it.
+            // Empty recessed cameo slots so a sparse sidebar still reads as a
+            // framed grid (the original's fixed slot background).
+            for (int col = 0; col < 2; col++)
+                for (int ey = kSideTop; ey + kCameoH <= winH; ey += kCameoH + 4) {
+                    int ex = viewW + 4 + col * (kCameoW + 4);
+                    bevelPanel(wc, ex, ey, kCameoW, kCameoH, 0xff1a1a16, /*sunken=*/true);
+                }
             drawStrip(visStructs, 0);
             drawStrip(visUnits, 1);
 
-            // ---- Top tab bar: OPTIONS | credits | SIDEBAR ----
+            // ---- Top tab bar: OPTIONS | power/credits | SIDEBAR ----
             bevelPanel(wc, 0, 0, winW, kTopBar, kFace);
-            bevelPanel(wc, 2, 1, 60, kTopBar - 2, kFace);
-            drawTextCentered(wc, font6, "OPTIONS", 2, 60, 3, kText);
-            bevelPanel(wc, viewW, 1, kSidebarW - 2, kTopBar - 2, kFace);
-            drawTextCentered(wc, font6, "SIDEBAR", winW - 62, 60, 3, kText);
-            {
+            int tY = 2;
+            if (hudFont) {
+                int wOpt = game::textWidth(*hudFont, "OPTIONS") + 10;
+                bevelPanel(wc, 1, 1, wOpt, kTopBar - 2, kFace);
+                drawTextCentered(wc, hudFont, "OPTIONS", 1, wOpt, tY, kText);
+                int wSide = game::textWidth(*hudFont, "SIDEBAR") + 10;
+                bevelPanel(wc, winW - 1 - wSide, 1, wSide, kTopBar - 2, kFace);
+                drawTextCentered(wc, hudFont, "SIDEBAR", winW - 1 - wSide, wSide, tY, kText);
+
                 int produced = 0, drained = 0;
                 sim.power(playerHouse, produced, drained);
                 std::string cr = "$" + std::to_string(sim.credits(playerHouse));
-                drawTextRight(wc, font8 ? font8 : font6, cr, viewW - 6, 2, kGreen);
-                std::string pw = "PWR " + std::to_string(produced) + "/" +
-                                 std::to_string(drained);
+                int crRight = viewW - 6;
+                drawTextRight(wc, hudFont, cr, crRight, tY, kGreen);
+                std::string pw = std::to_string(produced) + "/" + std::to_string(drained);
                 uint32_t pc = produced >= drained ? kText : 0xffff5050;
-                drawTextRight(wc, font6, pw, viewW - 90, 3, pc);
+                int pwRight = crRight - game::textWidth(*hudFont, cr) - 12;
+                drawTextRight(wc, hudFont, pw, pwRight, tY, pc);
+                drawTextRight(wc, hudFont, "PWR", pwRight - game::textWidth(*hudFont, pw) - 4,
+                              tY, kText);
             }
 
             if (dragging && (mstate & SDL_BUTTON_LMASK))

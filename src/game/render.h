@@ -30,6 +30,12 @@ struct BlitOptions {
 void blitIndexed(Canvas& c, const uint8_t* src, int sw, int sh, int dx, int dy,
                  const fmt::Palette& pal, const BlitOptions& opts = {});
 
+// Blit a sw*sh block scaled (nearest-neighbor) into a dw*dh box at (dx,dy).
+// Used for the low-res TD cameos (32x24) that fill a 64x48 sidebar slot.
+void blitIndexedScaled(Canvas& c, const uint8_t* src, int sw, int sh, int dx,
+                       int dy, int dw, int dh, const fmt::Palette& pal,
+                       const BlitOptions& opts = {});
+
 void fillRect(Canvas& c, int dx, int dy, int w, int h, uint32_t argb);
 void drawRect(Canvas& c, int dx, int dy, int w, int h, uint32_t argb); // 1px outline
 

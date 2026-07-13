@@ -80,6 +80,14 @@ The Tiberian Dawn build now *looks* like the original. Sim is unchanged.
 - Cameos now start at `kSideTop` (below radar+buttons), not y=4. Any new sidebar
   hit-testing must use `kSideTop`, and the scroll clamp is
   `kSideTop + rows*(kCameoH+4) + 4 − winH`.
+- **TD cameo `<type>icon.shp` art is 32×24** (not 64×48 like RA hires) — drawn
+  with `blitIndexedScaled` to fill the 64×48 slot (2×). Don't `blitIndexed` them
+  raw or they fill only the top-left quarter. Empty slots draw as recessed
+  bezels so the sparse mission-start sidebar still looks framed.
+- **Font naming is counter-intuitive**: `8point.fnt` maxHeight is 11 and
+  `6point.fnt` is 16 — 8point is the *smaller* one and is the HUD default
+  (`hudFont`). All chrome text is laid out from measured `textWidth` (spacing 0)
+  so labels/buttons fit; don't hardcode box widths or you'll clip edge glyphs.
 
 ## Verification recipe
 

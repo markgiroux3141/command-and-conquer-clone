@@ -179,7 +179,12 @@ sell/repair sim is still TODO). Top bar = OPTIONS | PWR produced/drained |
 selected units/structures show a color-coded health %. Layout constants
 (`kTopBar`/`kRadarH`/`kBtnH`/`kSideTop`) keep `entryPos`/`sidebarHit`/scroll in
 sync. Fonts load from `<root>/INSTALL/CCLOCAL/{6point,8point}.fnt` (optional —
-HUD degrades to no-text if absent).
+HUD degrades to no-text if absent). **TD cameo icons are 32×24** (RA's are
+60×48), so they're drawn via `blitIndexedScaled` to fill the 64×48 slot;
+empty slots render as recessed bezels so a sparse sidebar still reads as a grid.
+`8point.fnt` (maxH 11) is the compact HUD face — `6point.fnt` is confusingly
+*larger* (maxH 16); chrome text/buttons are sized to their measured pixel width
+so nothing overflows the 140px sidebar.
 
 ## Phase 7 — AI & missions
 
