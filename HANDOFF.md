@@ -1,115 +1,97 @@
-# Handoff — session 7 → session 8 (written 2026-07-13)
+# Handoff — session 8 → session 9 (written 2026-07-13)
 
-Session 7 closed the three top gameplay gaps on the Tiberian Dawn build:
-**enemy auto-acquire (return fire)**, **TD passability**, and **audio (SFX +
-music jukebox)**. All build clean and the headless sim is unchanged/deterministic.
+Session 8 delivered the **HUD fidelity** goal: an FNT font decoder plus a
+full 1995-style HUD (metallic sidebar, radar minimap, tab bar, all text).
+The Tiberian Dawn build now *looks* like the original. Sim is unchanged.
 
 ## Read first
 
-1. `MILESTONES.md` — Phase 8 (audio) + Phase 10 (TD) checklists and the
-   session-7 log entry (top of the log).
+1. `MILESTONES.md` — Phase 1 (FNT now ticked), Phase 6 (HUD-chrome note), and
+   the session-8 log entry (top of the log).
 2. `README.md` / `play.bat` — how to run.
-3. Then source, only as needed for the next task:
-   - `src/game/sim.{h,cpp}` — movement/combat/harvest/production. New this
-     session: `tickAutoAcquire`, `Unit::autoTarget`, `Event::Fire`.
-   - `src/game/audio.{h,cpp}` — the SDL mixer (new).
-   - `src/game_main.cpp` — the shell. Audio is wired here (`mixer`, the SFX
-     switch in `processEvents`, the jukebox in the render loop). TD support is
-     still the `isTd` branch through setup/bake/build-lists.
+3. Source, only as needed:
+   - `src/formats/fnt.{h,cpp}` — the font decoder (new this session).
+   - `src/game/render.{h,cpp}` — `drawText`/`textWidth` (new); Canvas/blit.
+   - `src/game_main.cpp` — the shell. HUD lives in the render loop: sidebar
+     chrome + radar + buttons + cameo strips, then the top tab bar; plus the
+     placement label and selected-unit health %. Layout constants near the top
+     (`kTopBar`/`kRadarH`/`kBtnH`/`kSideTop`) — change these and `entryPos`,
+     `sidebarHit`, and the scroll clamp all follow.
 
 ## Current state (what compiles / plays)
 
-- Builds clean: `cmake --build build --config Release` (MSVC). `play.bat` runs
-  GDI mission 1 by default (auto-detects disc from map name).
-- **Auto-acquire**: idle armed units fire at the nearest enemy in weapon range
-  without orders (both RA + TD; `housesEnemy` = different house, neither
-  Neutral). Guarding units hold their post; a *player*-ordered attack still
-  chases; a move order cancels the attack.
-- **TD passability**: ground units no longer cross water/rock — they clamp to
-  the shore. Per-cell land comes from the template table (`land` + per-icon
-  `altLand`/`altIcons`), baked in `bakeTerrainCell`.
-- **Audio (Phase 8 complete)**: combat SFX (weapon fire via per-weapon
-  `Report=`, impacts, deaths, building crumble) + a SCORES music jukebox + EVA
-  computer lines and unit voice acknowledgements (select/move/attack/build).
-  Silent+no-op if no audio device.
-- **Sidebar is now dynamic** (session 7): shows only cameos whose prerequisites
-  are currently met (`Sim::canProduce`, rebuilt each frame into `visStructs`/
-  `visUnits`) and darkens unaffordable ones — no longer the whole tech tree at
-  once. But it's still a flat dark panel with bare cameos: **no frame art, no
-  radar/logo box, no REPAIR/SELL/MAP or tab buttons, no text** (credits are in
-  the window title). That chrome is the remaining UI-fidelity work.
+- Builds clean: `cmake --build build --config Release` (MSVC, no warnings).
+  `play.bat` runs GDI mission 1. Sim headless is unchanged/deterministic
+  (scg01ea regression still: Nod e1 50→35, dies tick 197).
+- **FNT decoder** works end-to-end: Westwood new-format fonts (FontDataBlocks
+  5), 4-bit packed glyphs, per-char width/height(top-blank + data rows)/offset
+  tables. `game::drawText(canvas, font, text, x, y, argb, spacing)` treats any
+  non-transparent glyph pixel as the caller's color (game fonts are ~1-bit);
+  `textWidth` mirrors it. Fonts load from `<root>/INSTALL/CCLOCAL/` (TD):
+  `6point.fnt` (labels) + `8point.fnt` (credits). Optional — missing fonts just
+  disable text, so headless/other-disc runs are unaffected.
+- **HUD** (all verified via `--ui-shot` on scb03ea GoodGuy):
+  - Top tab bar: `OPTIONS` button, `PWR <produced>/<drained>` (red when short),
+    `$<credits>` (green, 8point), `SIDEBAR` tab.
+  - Sidebar: beveled metallic panel (`bevelPanel` helper — raised/sunken),
+    recessed 1px bezel per cameo, green `$<cost>` label bottom-right of each
+    cameo, unaffordable cameos still darkened, building progress bar + ready
+    border unchanged.
+  - Radar/logo box: a **live minimap** — the baked world surface (`mc`, the
+    Canvas over `mapSurf`) downscaled into the box, with 2px house-colored blips
+    (friendly green / enemy red / neutral gray) and a faction-tinted frame
+    (GDI gold `0xffd8b040`, Nod red `0xffd83030`).
+  - REPAIR | SELL | MAP button row — **visual only** (no sell/repair sim yet).
+  - Placement mode: `<NAME> $<cost>` label follows the cursor.
+  - Selected units/structures: color-coded health `%` above the health bar.
 - Still a sandbox: no win/lose, no AI/base-building, no mission triggers.
-  Gunboat is immobile (naval needs a contiguous water region).
 
 ## Next tasks (suggested order)
 
-1. **UI fidelity — the user's current goal ("look like the original")**. The
-   linchpin is an **FNT font decoder** (Phase 1 "Later"): once text renders,
-   the whole HUD becomes possible — credits/power readout, the "OPTIONS |
-   credits | SIDEBAR" tab bar, REPAIR/SELL/MAP buttons, cameo cost/name labels,
-   the "<name> $<cost>" placement label, unit health text. Then the sidebar
-   frame art (the metallic panel + cameo bezels) and the faction radar/logo box
-   at the top (GDI eagle / Nod). Verify each with `--ui-shot` → convert BMP→PNG
-   (PIL) → Read the PNG. The dynamic-cameo logic is already done; this is chrome.
-2. **Win/lose + a beatable mission** (Phase 7): destroy-all-structures /
-   lose-when-you-have-none; then mission INI `[Triggers]`/`[TeamTypes]`. Pairs
-   with a minimal skirmish AI (build order + attack waves).
-3. **Polish**: TD tiberium density/adjacency frames (currently frame 0 only) +
-   real harvest density; gunboat/naval water pathing; muzzle-flash anims; sound
-   fade/pan by on-screen distance; more EVA cues (low power, base under attack).
+1. **Wire the sidebar buttons** to sim: SELL (refund a structure, remove it),
+   REPAIR (drip-heal a structure for credits), MAP (toggle a larger radar /
+   jump-scroll). SELL/REPAIR need small `Sim` methods; MAP is pure UI.
+2. **Win/lose + a beatable mission** (Phase 7): destroy-all-structures win /
+   lose-when-you-have-none; then mission INI `[Triggers]`/`[TeamTypes]`, with a
+   minimal skirmish AI (build order + attack waves).
+3. **Polish**: radar shroud (dim unexplored cells in the minimap), cameo
+   name/tooltip, TD tiberium density frames + real harvest density, muzzle-flash
+   anims, sound pan by on-screen distance, more EVA cues.
 
 ## Gotchas discovered this session (not all in code comments)
 
-- **Auto-acquire is range-gated, not chase**: `autoTarget` units drop the
-  target the instant it leaves weapon range (see the `dist > w->range` branch in
-  `tickCombat`) so idle armies don't wander. Player orders set `autoTarget=false`
-  → normal chase. A unit *moving* under orders does NOT auto-fire (correct: plain
-  move ≠ attack-move) — this is why a unit run through a gauntlet dies without
-  shooting back until it goes idle.
-- **TD land = template table, not the TMP** (RA reads the TMP control map; TD
-  TMPs have none). Generator parses `TemplateTypeClass` ctor arg 5 (`Land`) and
-  arg 8 (`AltLand`) + the `_slope*` `AltIcons` exception lists; TD `LandType`
-  0-6 == `game::Land` 0-6 (Tiberium→Ore). CELL.CPP `Land_Type()` = "icon in
-  AltIcons → AltLand, else Land". Overlays (tiberium/walls) override land after
-  the terrain bake, so ordering is fine.
-- **Audio device format**: opened 22050 Hz mono S16; the device may pick another
-  rate (`have.freq`) so everything resamples to `rate_`. AUD format 1 = 8-bit
-  unsigned (→ `(s-128)<<8`), format 99 = 16-bit. Mixing is guarded by
-  `SDL_LockAudioDevice`; cache entries are never freed so `Voice` pcm pointers
-  stay valid. Music plays at 3/8 volume under SFX.
-- **`Event::Fire` is new** — any code iterating `sim.events()` must handle it
-  (the shell `continue`s after playing the report; it has no explosion anim).
-- **Some SFX aren't on the base GDI disc** (toss/hvygun10/turrfir5/gun5); the
-  `Report=` values were swapped for present equivalents (bazook1/tnkfire6/
-  tnkfire3/gun8). Nod disc may differ — missing files just play silent.
-- SFX/music dirs are `<root>/SOUNDS` and `<root>/SCORES` (TD layout). RA would
-  need different paths (degrades silent).
-- **EVA speech is Covert-Ops-only** — `<root>/../covert_ops/AUD1/SPEECH/*.aud`
-  (base gdi/nod discs omit it, same as the cameos). Unit voice responses ARE on
-  the base disc but use the `.v00-.v03` extension, not `.aud` (loaded via
-  `AudioMixer::playVoice`). EVA + unit voices share ONE speech channel
-  (`speech_`, newest-wins) so lines never overlap; SFX use the many-voice pool.
-  New EVA/voice cues go in the interactive command handlers in `game_main.cpp`
-  (the `mixer.playEva`/`playVoice` calls) — headless never opens the device.
+- **FNT header** (little-endian): u16 fileLen; u8 compress(0); u8 dataBlocks(5);
+  then u16 offsets at 4/6/8/10/12 = info/offset/width/data/height blocks.
+  `maxHeight/maxWidth` = infoBlock[4]/[5]. **Char count = (widthBlockOff −
+  offsetBlockOff)/2** (offset table is u16/char). Per char: offset table entry
+  is an *absolute* file offset to the pixel data; width table is u8; height
+  table is 2 bytes/char = {topBlank, dataRows}. Pixels are two-per-byte, **low
+  nibble first**, `ceil(width/2)` bytes per row, `dataRows` rows. Value 0 =
+  transparent, 1 = foreground (recolored), 2-15 = literal palette index (rare;
+  our `drawText` treats all nonzero as the one caller color — fine for HUD).
+- `6point.fnt` reports maxHeight/maxWidth 16 (generous cell), but real glyph
+  data rows are ~7px — don't be alarmed; we only use per-glyph `yOffset`/`height`
+  and `maxWidth` (fallback advance for missing glyphs), not maxHeight for layout.
+- The minimap reuses `mc` (the persistent `Canvas` wrapping `mapSurf` from the
+  bake step) — it stays valid the whole run because `mapSurf->pixels` is stable.
+- Sim entities have **no `alive` flag**; dead ones are removed from the vectors.
+  Blips guard on `hp > 0` anyway (harmless). `Unit::cell()` is a method;
+  `Structure::cell` is a field (top-left) — watch the `()`.
+- Cameos now start at `kSideTop` (below radar+buttons), not y=4. Any new sidebar
+  hit-testing must use `kSideTop`, and the scroll clamp is
+  `kSideTop + rows*(kCameoH+4) + 4 − winH`.
 
 ## Verification recipe
 
 ```
-# Auto-acquire (headless, both directions): move a GDI e1 to its post in range
-# of Nod e1 with NO attack order; it auto-fires (Nod e1 50->35) and the idle Nod
-# mob returns fire and kills it:
-build\Release\game.exe data\assets\tiberian_dawn\gdi\GENERAL\scg01ea.ini ^
-  data\assets\tiberian_dawn\gdi --house GoodGuy --no-shroud --sim-ticks 240 --move 2,57,48
-# Expect: "unit 6 ... hp 35/50" and unit 2 died ~tick 197.
-
-# Passability: order the (weaponless) MCV onto the boat's water cell; it stops
-# at the shore instead of driving onto water:
-build\Release\game.exe data\assets\tiberian_dawn\gdi\GENERAL\scg01ea.ini ^
-  data\assets\tiberian_dawn\gdi --house GoodGuy --no-shroud --sim-ticks 300 --move 0,53,59
-# Expect: "unit 0 mcv ... cell 51,57" (clamped to land), not 53,59.
-
-# Audio: run interactively (play) and LISTEN — tank/gun fire, explosions on
-# death, and background music from SCORES. Headless is always silent.
+# HUD screenshot (populated GDI base → full sidebar):
+build\Release\game.exe data\assets\tiberian_dawn\nod\GENERAL\scb03ea.ini ^
+  data\assets\tiberian_dawn\nod --house GoodGuy --no-shroud --ui-shot out.bmp
+# Then: python -c "from PIL import Image; Image.open('out.bmp').save('out.png')"
+# Expect: OPTIONS/PWR/$credits/SIDEBAR tab bar, beveled sidebar, gold-framed
+# radar minimap with green/red blips, REPAIR|SELL|MAP row, green $cost labels.
+# Placement label + health % need an interactive session (click a cameo / units)
+# — they share the same drawText path, so a screenshot of either confirms both.
 ```
 
 ## Context handoff protocol

@@ -26,6 +26,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "formats/fnt.h"
 #include "formats/palette.h"
 #include "formats/shp.h"
 #include "formats/shpd2.h"
@@ -45,6 +46,17 @@ constexpr int kTile = 24;
 constexpr double kTickMs = 1000.0 / 15.0; // RA game speed: 15 ticks/s
 constexpr int kCameoW = 64, kCameoH = 48; // sidebar icon SHP size
 constexpr int kSidebarW = kCameoW * 2 + 12;
+constexpr int kTopBar = 14;                  // OPTIONS | credits | SIDEBAR tab bar
+constexpr int kRadarH = kSidebarW - 12;      // radar/logo box (near-square)
+constexpr int kBtnH = 13;                    // REPAIR / SELL / MAP button row
+constexpr int kSideTop = kTopBar + kRadarH + kBtnH + 6; // first cameo row y
+
+// Westwood-style HUD palette (metallic gray with beige accents).
+constexpr uint32_t kFace = 0xff54544c;  // panel face
+constexpr uint32_t kLight = 0xff8c8c80; // raised highlight (top/left)
+constexpr uint32_t kDark = 0xff23231e;  // raised shadow (bottom/right)
+constexpr uint32_t kText = 0xffe8e8d0;  // off-white label text
+constexpr uint32_t kGreen = 0xff38f838; // credits / radar readout green
 
 int intArg(int argc, char** argv, const char* name, int fallback) {
     for (int i = 3; i < argc - 1; i++)
@@ -241,6 +253,36 @@ void drawObject(game::Canvas& c, const DrawObject& o, const fmt::Palette& pal,
     }
 }
 
+// A raised 3D panel: face fill with a light top/left and dark bottom/right edge
+// (the Westwood beveled-metal look). `sunken` swaps the edges for a recess.
+void bevelPanel(game::Canvas& c, int x, int y, int w, int h, uint32_t face,
+                bool sunken = false) {
+    uint32_t hi = sunken ? kDark : kLight, lo = sunken ? kLight : kDark;
+    game::fillRect(c, x, y, w, h, face);
+    game::fillRect(c, x, y, w, 1, hi);
+    game::fillRect(c, x, y, 1, h, hi);
+    game::fillRect(c, x, y + h - 1, w, 1, lo);
+    game::fillRect(c, x + w - 1, y, 1, h, lo);
+}
+
+// Draw `text` centered horizontally in [x, x+w) at row y with font (if loaded).
+void drawTextCentered(game::Canvas& c, const std::optional<fmt::FntFile>& font,
+                      const std::string& text, int x, int w, int y, uint32_t argb,
+                      int spacing = 1) {
+    if (!font)
+        return;
+    int tw = game::textWidth(*font, text, spacing);
+    game::drawText(c, *font, text, x + (w - tw) / 2, y, argb, spacing);
+}
+
+// Right-align `text` so it ends at xRight.
+void drawTextRight(game::Canvas& c, const std::optional<fmt::FntFile>& font,
+                   const std::string& text, int xRight, int y, uint32_t argb) {
+    if (!font)
+        return;
+    game::drawText(c, *font, text, xRight - game::textWidth(*font, text), y, argb);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -288,6 +330,21 @@ int main(int argc, char** argv) {
         auto pal = fmt::Palette::load(palPath);
         ArtCache art(theaterDir, conquerDir, hiresDir, map.theaterExt());
         auto rules = game::Rules::load(rulesPath);
+
+        // HUD fonts (Westwood .FNT). Optional: absent → HUD renders without text.
+        std::string fontDir =
+            isTd ? root + "/INSTALL/CCLOCAL" : root + "/INSTALL/REDALERT/local";
+        auto loadFont = [](const std::string& p) -> std::optional<fmt::FntFile> {
+            try {
+                return fmt::FntFile::load(p);
+            } catch (const std::exception&) {
+                return std::nullopt;
+            }
+        };
+        std::optional<fmt::FntFile> font6 = loadFont(fontDir + "/6point.fnt");
+        std::optional<fmt::FntFile> font8 = loadFont(fontDir + "/8point.fnt");
+        if (!font6)
+            std::printf("note: no HUD font at %s (text disabled)\n", fontDir.c_str());
 
         // Sound mixer: opened only for the interactive window (init() below);
         // stays silent in headless runs, so processEvents()'s SFX are no-ops.
@@ -990,7 +1047,7 @@ int main(int argc, char** argv) {
         std::vector<const BuildEntry*> visStructs, visUnits;
         auto entryPos = [&](int col, int idx, int& x, int& y) {
             x = viewW + 4 + col * (kCameoW + 4);
-            y = 4 + idx * (kCameoH + 4) - sideScroll;
+            y = kSideTop + idx * (kCameoH + 4) - sideScroll;
         };
         // Cameo under the mouse; null if none.
         auto sidebarHit = [&](int hx, int hy) -> const BuildEntry* {
@@ -1000,7 +1057,7 @@ int main(int argc, char** argv) {
             if (col > 1 || hx >= viewW + 4 + col * (kCameoW + 4) + kCameoW)
                 return nullptr;
             const auto& list = col == 0 ? visStructs : visUnits;
-            int idx = (hy - 4 + sideScroll) / (kCameoH + 4);
+            int idx = (hy - kSideTop + sideScroll) / (kCameoH + 4);
             if (idx < 0 || idx >= int(list.size()))
                 return nullptr;
             int ex, ey;
@@ -1047,7 +1104,7 @@ int main(int argc, char** argv) {
                 if (e.type == SDL_MOUSEWHEEL && mx >= viewW) {
                     int rows = int(std::max(visStructs.size(), visUnits.size()));
                     int maxScroll =
-                        std::max(0, rows * (kCameoH + 4) + 8 - winH);
+                        std::max(0, kSideTop + rows * (kCameoH + 4) + 4 - winH);
                     sideScroll = std::clamp(sideScroll - e.wheel.y * (kCameoH + 4),
                                             0, maxScroll);
                 }
@@ -1283,6 +1340,21 @@ int main(int argc, char** argv) {
             objects = buildDrawList(); // positions may have ticked above
             for (const auto& o : objects)
                 drawObject(wc, o, pal, int(camX), int(camY));
+            // Numeric health % above selected units/structures.
+            if (font6)
+                for (const auto& o : objects)
+                    if (o.selected && o.selectable) {
+                        int pct = std::clamp(o.health * 100 / 256, 0, 100);
+                        std::string s = std::to_string(pct) + "%";
+                        uint32_t hc = pct > 66 ? 0xff30ff30
+                                      : pct > 33 ? 0xffe0e030
+                                                 : 0xffff3030;
+                        int tx = o.x - int(camX) + o.shp->width / 2 -
+                                 game::textWidth(*font6, s) / 2;
+                        int ty = o.y - int(camY) - 13;
+                        game::drawText(wc, *font6, s, tx + 1, ty + 1, 0xff000000);
+                        game::drawText(wc, *font6, s, tx, ty, hc);
+                    }
             drawEffects(wc, int(camX), int(camY));
             drawShroud(wc, int(camX), int(camY));
 
@@ -1299,10 +1371,61 @@ int main(int argc, char** argv) {
                                        (cellX + bx - cx0) * kTile - int(camX),
                                        (cellY + by - cy0) * kTile - int(camY),
                                        kTile, kTile, col);
+                // "<NAME> $<cost>" label following the cursor.
+                if (font6) {
+                    std::string lbl = placingType;
+                    for (auto& ch : lbl)
+                        ch = char(std::toupper((unsigned char)ch));
+                    int cost = rules.unit(placingType, game::UnitKind::Structure).cost;
+                    lbl += " $" + std::to_string(cost);
+                    game::drawText(wc, *font6, lbl, mx + 13, my + 1, 0xff000000);
+                    game::drawText(wc, *font6, lbl, mx + 12, my, kText);
+                }
             }
 
-            // ---- Sidebar ----
-            game::fillRect(wc, viewW, 0, kSidebarW, winH, 0xff26262e);
+            // ---- Sidebar chrome (metallic panel + radar + buttons) ----
+            uint32_t faction = playerHouse == "BadGuy" ? 0xffd83030   // Nod red
+                                                       : 0xffd8b040;  // GDI gold
+            bevelPanel(wc, viewW, kTopBar, kSidebarW, winH - kTopBar, kFace);
+
+            // Radar/logo box: a live minimap of the baked world with house blips
+            // and a faction-colored inner frame (the original's radar surround).
+            int rx = viewW + 4, ry = kTopBar + 4;
+            int rw = kSidebarW - 8, rh = kRadarH - 4;
+            bevelPanel(wc, rx, ry, rw, rh, 0xff101008, /*sunken=*/true);
+            int irx = rx + 2, iry = ry + 2, irw = rw - 4, irh = rh - 4;
+            for (int py = 0; py < irh; py++)
+                for (int px = 0; px < irw; px++) {
+                    int sx = px * mapSurf->w / irw, sy = py * mapSurf->h / irh;
+                    wc.px[(iry + py) * wc.pitch + (irx + px)] =
+                        mc.px[sy * mc.pitch + sx];
+                }
+            auto blip = [&](int cell, const std::string& house) {
+                int bx = irx + (cell % kSize - cx0) * irw / cw;
+                int by = iry + (cell / kSize - cy0) * irh / ch;
+                uint32_t col = house == "Neutral" ? 0xffb0b0b0
+                               : house == playerHouse ? 0xff30ff30
+                                                      : 0xffff3030;
+                game::fillRect(wc, bx, by, 2, 2, col);
+            };
+            for (const auto& s : sim.structures())
+                if (s.hp > 0)
+                    blip(s.cell, s.house);
+            for (const auto& u : sim.units())
+                if (u.hp > 0)
+                    blip(u.cell(), u.house);
+            game::drawRect(wc, irx - 1, iry - 1, irw + 2, irh + 2, faction);
+
+            // REPAIR | SELL | MAP button row (visual for now).
+            int byRow = kTopBar + kRadarH + 2, bw = (kSidebarW - 8) / 3;
+            const char* btns[] = {"REPAIR", "SELL", "MAP"};
+            for (int b = 0; b < 3; b++) {
+                int bx = viewW + 4 + b * bw;
+                bevelPanel(wc, bx, byRow, bw - 1, kBtnH, kFace);
+                drawTextCentered(wc, font6, btns[b], bx, bw - 1, byRow + 2, kText,
+                                 /*spacing=*/0);
+            }
+
             // Halve a region's brightness (like the SHP shadow table) to mark
             // an available-but-unaffordable cameo.
             auto darken = [&](int x0, int y0, int w, int h) {
@@ -1316,7 +1439,7 @@ int main(int argc, char** argv) {
                 for (int i = 0; i < int(list.size()); i++) {
                     int ex, ey;
                     entryPos(col, i, ex, ey);
-                    if (ey + kCameoH < 0 || ey >= winH)
+                    if (ey + kCameoH < kSideTop - kCameoH || ey >= winH)
                         continue;
                     const auto& en = *list[i];
                     blitIndexed(wc, en.icon->frames[0].data(), en.icon->width,
@@ -1327,6 +1450,16 @@ int main(int argc, char** argv) {
                     if (!building &&
                         sim.credits(playerHouse) < rules.unit(en.type, en.kind).cost)
                         darken(ex, ey, kCameoW, kCameoH);
+                    // Cost label (bottom of the cameo) with a 1px black shadow.
+                    int cost = rules.unit(en.type, en.kind).cost;
+                    if (font6 && cost > 0) {
+                        std::string s = "$" + std::to_string(cost);
+                        int tx = ex + kCameoW - game::textWidth(*font6, s) - 2;
+                        game::drawText(wc, *font6, s, tx + 1, ey + kCameoH - 9, 0xff000000);
+                        game::drawText(wc, *font6, s, tx, ey + kCameoH - 10, kGreen);
+                    }
+                    // Recessed bezel around the cameo.
+                    game::drawRect(wc, ex - 1, ey - 1, kCameoW + 2, kCameoH + 2, kDark);
                     if (building) {
                         game::fillRect(wc, ex, ey + kCameoH - 4,
                                        kCameoW * p->frac256() / 256, 3, 0xffe8e800);
@@ -1337,8 +1470,26 @@ int main(int argc, char** argv) {
                     }
                 }
             };
+            // Clip cameos to below the button row so they don't bleed over it.
             drawStrip(visStructs, 0);
             drawStrip(visUnits, 1);
+
+            // ---- Top tab bar: OPTIONS | credits | SIDEBAR ----
+            bevelPanel(wc, 0, 0, winW, kTopBar, kFace);
+            bevelPanel(wc, 2, 1, 60, kTopBar - 2, kFace);
+            drawTextCentered(wc, font6, "OPTIONS", 2, 60, 3, kText);
+            bevelPanel(wc, viewW, 1, kSidebarW - 2, kTopBar - 2, kFace);
+            drawTextCentered(wc, font6, "SIDEBAR", winW - 62, 60, 3, kText);
+            {
+                int produced = 0, drained = 0;
+                sim.power(playerHouse, produced, drained);
+                std::string cr = "$" + std::to_string(sim.credits(playerHouse));
+                drawTextRight(wc, font8 ? font8 : font6, cr, viewW - 6, 2, kGreen);
+                std::string pw = "PWR " + std::to_string(produced) + "/" +
+                                 std::to_string(drained);
+                uint32_t pc = produced >= drained ? kText : 0xffff5050;
+                drawTextRight(wc, font6, pw, viewW - 90, 3, pc);
+            }
 
             if (dragging && (mstate & SDL_BUTTON_LMASK))
                 game::drawRect(wc, std::min(dragX0, mx), std::min(dragY0, my),

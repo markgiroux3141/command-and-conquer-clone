@@ -11,6 +11,7 @@ find_package(SDL2 REQUIRED)
 add_library(formats STATIC
     src/formats/aud.cpp
     src/formats/cps.cpp
+    src/formats/fnt.cpp
     src/formats/ini.cpp
     src/formats/lcw.cpp
     src/formats/palette.cpp

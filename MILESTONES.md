@@ -21,7 +21,10 @@ the anchor document for context handoffs (see bottom).
 - [x] TMP terrain templates — verified vs rv01.tem river (2026-07-06)
 - [x] AUD audio — both IMA (99) and WW ADPCM (1) paths verified; WAVs in
       `data/wav-samples/` for listening (2026-07-06)
-- [ ] Later: WSA/CPS (menus, briefings), FNT fonts, VQA video (nice-to-have)
+- [x] FNT bitmap fonts (`src/formats/fnt.{h,cpp}`) — new-format (FontDataBlocks
+      5) header + 4-bit packed glyphs; drives all HUD text via `game::drawText`
+      (2026-07-13, session 8)
+- [ ] Later: WSA/CPS (menus, briefings), VQA video (nice-to-have)
 
 Gotchas learned: trees/terrain objects use theater extensions (.tem/.sno) but
 are SHP-format, not TMP — sniff by magic, not extension. Only 10 of 1,637 AUDs
@@ -165,10 +168,18 @@ scb03ea shows structures + infantry, no vehicles without a war factory) and
 headless (e1 builds from pyle).
 Not yet done: batch/queued items per category, ship production (syrd/spen),
 buildup anims (`<type>make.shp`), bib drawing under buildings, per-cell
-placement validity coloring, silo storage caps, selling/repair. **The sidebar
-visual chrome (metallic frame, radar/logo box, REPAIR/SELL/MAP + tab buttons,
-and an in-game FNT font for all text) is the remaining piece to truly match the
-original — needs the FNT decoder first (Phase 1 "Later").**
+placement validity coloring, silo storage caps, selling/repair.
+**HUD chrome landed 2026-07-13 (session 8):** the FNT decoder (Phase 1) now
+drives all sidebar/HUD text. The sidebar is a beveled metallic panel with
+recessed cameo bezels, per-cameo green `$cost` labels, a live radar minimap
+(downscaled baked world + house-colored unit/structure blips, faction-tinted
+frame — GDI gold / Nod red), and a REPAIR|SELL|MAP button row (visual only —
+sell/repair sim is still TODO). Top bar = OPTIONS | PWR produced/drained |
+`$credits` (green) | SIDEBAR. Placement shows a "`<NAME> $cost`" cursor label;
+selected units/structures show a color-coded health %. Layout constants
+(`kTopBar`/`kRadarH`/`kBtnH`/`kSideTop`) keep `entryPos`/`sidebarHit`/scroll in
+sync. Fonts load from `<root>/INSTALL/CCLOCAL/{6point,8point}.fnt` (optional —
+HUD degrades to no-text if absent).
 
 ## Phase 7 — AI & missions
 
@@ -389,6 +400,25 @@ carries the delta. Update this file's checkboxes *before* writing a handoff.
   found along the way (infantry ← pyle/hand, vehicles ← weap/afld). Verified
   with `--ui-shot`. Remaining for full UI fidelity: sidebar frame art + an FNT
   font for text. Known gaps: gunboat immobile (naval), no win/lose/AI (Phase 7).
+- **2026-07-13 (session 8): HUD fidelity — "look like the original."** Built
+  the **FNT font decoder** (`src/formats/fnt.{h,cpp}`, the Phase 1 linchpin):
+  Westwood new-format fonts (header block offsets per TXTPRNT.ASM, 4-bit packed
+  glyphs, per-char width/height/offset tables), plus `game::drawText`/`textWidth`
+  in `render.{h,cpp}` (non-transparent glyph pixel → caller color; the game
+  fonts are effectively 1-bit). Verified end-to-end by rendering — text is crisp
+  in every HUD element. Then rebuilt the HUD to match the 1995 game: beveled
+  metallic sidebar with recessed cameo bezels + green `$cost` labels, a **live
+  radar minimap** (downscaled baked world + house-colored blips, faction-tinted
+  frame), a REPAIR|SELL|MAP button row (visual), and a top tab bar
+  (OPTIONS | PWR | `$credits` | SIDEBAR). Placement shows a `<NAME> $cost` cursor
+  label; selected objects show a health %. New layout constants keep the cameo
+  hit-testing/scroll in sync with the shifted-down strips. Fonts load from
+  `<root>/INSTALL/CCLOCAL`. Built clean (no warnings), sim unchanged/deterministic
+  (scg01ea regression: Nod e1 50→35, died tick 197). Verified the sidebar/tab/
+  radar/cost via `--ui-shot` on scb03ea GoodGuy; placement label + health % are
+  verified-by-construction (share the tested `drawText`, no headless trigger).
+  Remaining UI polish: functional sell/repair, real radar shroud, cameo name
+  tooltips.
 - **2026-07-08 (session 5): Phase 6 complete.** Production stats in rules
   (Cost/TechLevel/Owner/Prerequisite/BuildSpeed/land Buildable=), sim
   production slots with drip payment + power scaling, prereq tree,

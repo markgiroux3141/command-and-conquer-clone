@@ -61,6 +61,42 @@ void drawRect(Canvas& c, int dx, int dy, int w, int h, uint32_t argb) {
     fillRect(c, dx + w - 1, dy, 1, h, argb);
 }
 
+int drawText(Canvas& c, const fmt::FntFile& font, const std::string& text, int x,
+             int y, uint32_t argb, int spacing) {
+    int cx = x;
+    for (unsigned char ch : text) {
+        const auto* g = font.glyph(ch);
+        if (!g) {
+            cx += font.maxWidth + spacing;
+            continue;
+        }
+        for (int gy = 0; gy < g->height; gy++) {
+            int ty = y + g->yOffset + gy;
+            if (ty < 0 || ty >= c.h)
+                continue;
+            for (int gx = 0; gx < g->width; gx++) {
+                if (g->pixels[gy * g->width + gx] == 0)
+                    continue; // transparent
+                int tx = cx + gx;
+                if (tx < 0 || tx >= c.w)
+                    continue;
+                c.px[ty * c.pitch + tx] = argb;
+            }
+        }
+        cx += g->width + spacing;
+    }
+    return cx;
+}
+
+int textWidth(const fmt::FntFile& font, const std::string& text, int spacing) {
+    int w = 0;
+    for (unsigned char ch : text) {
+        const auto* g = font.glyph(ch);
+        w += (g ? g->width : font.maxWidth) + spacing;
+    }
+    return w > 0 ? w - spacing : 0;
+}
+
 int facingToFrame(int facing) {
     static const int kBodyShape[32] = {0,  31, 30, 29, 28, 27, 26, 25, 24, 23, 22,
                                        21, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11,
