@@ -186,11 +186,67 @@ empty slots render as recessed bezels so a sparse sidebar still reads as a grid.
 *larger* (maxH 16); chrome text/buttons are sized to their measured pixel width
 so nothing overflows the 140px sidebar.
 
-## Phase 7 — AI & missions
+## Phase 7 — AI & missions 🚧 (started 2026-07-14, session 12)
 
-- [ ] Skirmish AI: base building + attack waves (reference: original TeamTypes)
-- [ ] Mission scripting: triggers, teamtypes, reinforcements
-- [ ] Playable campaign mission 1 (Allied)
+- [x] **Win/lose conditions** (2026-07-14): `Sim` tracks combatant houses
+      (non-Neutral, from `addUnit`/`addStructure`) and latches a house as
+      *defeated* when it holds no units or structures (emits `Event::HouseDefeated`).
+      `Sim::winner()` = the sole survivor once every other combatant is out;
+      `gameOver()`/`houseDefeated()` queries. Headless `--until-win` runs to a
+      decision (safety cap 100k ticks) and prints the winner. Interactive shell
+      shows a centered **MISSION ACCOMPLISHED / FAILED** banner + EVA
+      (`accom1`/`fail1`) and stops accepting orders. Verified with a throwaway
+      lib test (combatants exclude Neutral; defeat latches + event; winner
+      resolves; loss precedence).
+- [x] **Skirmish AI** (2026-07-14): `Sim::setAI(house)` + `Sim::tickAI` — a
+      deterministic base-builder (thinks every ~15 ticks, keyed off `tickCount_`,
+      staggered per house). Deploys the MCV → builds the tech chain (power →
+      refinery → barracks → war factory, side-aware pyle/hand + weap/afld),
+      trains rifles, builds harvesters then a tank line, sends **attack waves**
+      (all armed units at the nearest enemy) once it has ≥5 units, on a 450-tick
+      cooldown. Reuses `startProduction`/`placeBuilding`/`deployMcv`/`orderAttack`.
+      Building footprints come from the art via `Sim::setFootprint` (registered
+      by the shell). Refineries now ship a **free harvester** (`grantHarvester`,
+      like the original) so the economy self-sustains. Enemy houses are
+      AI-controlled by default in the shell (`--no-ai` off; headless opt-in via
+      `--ai`/`--until-win`, with `--ai-credits` stipend). AI-placed structures
+      get drawables via a reconcile pass in `buildDrawList`. Verified: full base
+      built on scg01ea; a synthetic 2-AI skirmish (ore + two MCVs) runs
+      deploy→build→harvest→train→attack→**winner at tick 22618, byte-identical
+      across runs**.
+- [x] **Mission scripting** (2026-07-14): `map.cpp` parses `[Triggers]`
+      (`Name=Event,Action,Data,House,Team,Persist`), `[TeamTypes]` (house +
+      roster, per TEAMTYPE.CPP field order), and `[Waypoints]` into `MapFile`.
+      The sim runs a trigger evaluator on the ~6s cadence (`TICKS_PER_MINUTE/10`):
+      **Time** (fires after Data×90 ticks), **All Destr.**, **Bldgs Destr.** →
+      **Win/Lose** (sets `Sim::missionResult`), **Reinforce.**/**Create Team**
+      (spawns the TeamType roster near the house's base — the AI then uses armed
+      spawns in its waves), **Production/Autocreate** (wakes the house AI).
+      Volatile triggers fire once. Verified on TD **GDI mission 1** (scg01ea):
+      scripted GDI reinforcements arrive on schedule (6→9→12 rifles at ticks
+      270/540), Nod's Create Team fires (10→12 at tick 90), and a lib test
+      confirms Time→Reinforce spawns + All Destr.→Win sets the result. Win/lose
+      prefers the scripted result, falling back to last-house-standing on
+      trigger-less skirmish maps. Determinism preserved (AI+triggers run
+      byte-identical).
+- [x] **Confine units to the playable bounds** (2026-07-14, session 12): cells
+      outside `[map.x,+width) x [map.y,+height)` are now marked impassable, so
+      units (reinforcements especially) can't path into the un-arted border past
+      where the camera can scroll. (Reported: a humvee drove above the top scroll
+      limit — 2026-07-14.)
+- [ ] Phase 7 polish / known gaps:
+      - **Reinforcements spawn near the house's base**, not delivered at the map
+        edge / shore. The originals bring them in from a waypoint or by LST
+        (naval landing, currently skipped) / A-plane and drive them on. First-
+        pass fix: spawn at the reinforcement waypoint + move onto the map;
+        proper fix needs naval/air transport. (Reported: units "appearing out of
+        nowhere" mid-map instead of at the shore — 2026-07-14, session 12.)
+      - Coordinated **TeamType missions** (Move:wpt / Attack / Guard scripts) are
+        parsed-past, not run — spawned units just fold into the generic AI wave.
+      - Trigger coverage is a subset: no superweapons, `Built It`, `Discovered`,
+        `Credits`, cell triggers, or trigger-chaining.
+      - AI has no defensive-structure building, difficulty tiers, building
+        rebuild, or per-map `[Base]` prebuilt list.
 
 ## Phase 8 — Audio & polish
 
@@ -213,7 +269,13 @@ so nothing overflows the 140px sidebar.
       `fmt::AudFile` path; interactive launch stable. **Phase 8 audio complete.**
 - [ ] Sound fade/pan by on-screen distance (Sound_Effect pans by cell); more
       EVA cues (low power, base under attack, insufficient funds, new options).
-- [ ] Main menu, in-game options, save/load
+- [ ] **Main menu + game flow** (requested 2026-07-14, session 12): a front-end
+      menu (New Game / mission select / quit) and a **post-mission screen** —
+      right now MISSION ACCOMPLISHED/FAILED just freezes the game with no way
+      forward. After the banner, offer restart / next mission / return to menu
+      (TD shows a score screen then advances the campaign). Needs a simple game
+      state machine around the current single-map shell.
+- [ ] In-game options menu (the OPTIONS tab is a stub), save/load.
 
 ## Phase 9 — Map editor (side quest; can start any time after Phase 4)
 
@@ -357,6 +419,31 @@ carries the delta. Update this file's checkboxes *before* writing a handoff.
 
 ### Session log
 
+- **2026-07-14 (session 12): Phase 7 — AI & missions.** All three Phase 7
+  blocks landed and verified (see the Phase 7 checklist above). (1) **Win/lose**:
+  combatant tracking + latched defeat + `Event::HouseDefeated`, `Sim::winner()`/
+  `gameOver()`/`missionResult()`, headless `--until-win`, interactive MISSION
+  ACCOMPLISHED/FAILED banner + EVA. (2) **Skirmish AI** (`setAI`/`tickAI`):
+  deterministic base-builder — deploy MCV, full tech chain, train units +
+  harvesters, timed attack waves; free harvester with each refinery; footprints
+  via `setFootprint`; on by default for enemy houses (`--no-ai`/`--ai`/
+  `--ai-credits`); AI structures reconciled into the draw list. (3) **Mission
+  scripting**: `[Triggers]`/`[TeamTypes]`/`[Waypoints]` parsed in `map.cpp`; sim
+  trigger evaluator (Time/All Destr./Bldgs Destr. → Win/Lose/Reinforce/Create
+  Team/Production) on the 6s cadence. Verified: 2-AI synthetic skirmish resolves
+  to a deterministic winner (tick 22618); GDI mission 1 reinforcements + enemy
+  create-team fire on schedule; throwaway lib tests confirm win-latch + trigger
+  actions; headless AI+triggers byte-identical across runs; sim stays
+  deterministic; HUD `--ui-shot` intact. Temp test targets (wintest/aitest/
+  scripttest) were added, run, and removed — tree is clean. **User playtested
+  GDI mission 1 and won** (MISSION ACCOMPLISHED banner confirmed); feedback fed
+  three follow-ups: (a) reinforcements appear mid-map instead of at the shore
+  (Phase 7 polish gap, noted); (b) nothing happens after the banner — needs a
+  main menu / post-mission flow (added to Phase 8); (c) a unit drove above the
+  top scroll limit — **fixed** by marking out-of-bounds cells impassable. **Next:
+  Phase 7 polish** — coordinated TeamType missions (Move/Attack waypoint scripts),
+  reinforcement map-edge/LST entry, superweapon/other trigger actions, AI
+  difficulty + defensive-structure building; then Phase 8 menus/save-load.
 - **2026-07-14 (session 11): gameplay/HUD polish (feedback-driven).** No new
   phase — a batch of fixes on the TD shell, each confirmed by the user (see the
   Phase 10 checklist bullet for the full list). Highlights: sidebar build

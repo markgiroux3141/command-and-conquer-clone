@@ -53,6 +53,30 @@ struct MapFile {
     std::vector<Object> infantry;
     std::vector<Object> structures;
 
+    // --- mission scripting ([Triggers]/[TeamTypes]/[Waypoints]) ---
+    // A scenario trigger: an event → action pair scoped to a house, optionally
+    // referencing a team. INI form: Name=Event,Action,Data,House,Team,Persist.
+    struct Trigger {
+        std::string name;
+        std::string event;  // "Time", "All Destr.", "Bldgs Destr.", ...
+        std::string action; // "Win", "Lose", "Reinforce.", "Create Team", ...
+        int data = 0;       // Time: fires after data * 90 ticks (6s units)
+        std::string house;  // house the event watches / the team belongs to
+        std::string team;   // TeamType name, or "None"
+        bool persist = false;
+    };
+    // A reusable squad template: a house + a roster of (type, count). The
+    // scripted mission/behaviour fields are parsed past but not retained (the
+    // skirmish AI drives spawned units).
+    struct TeamType {
+        std::string name;
+        std::string house;
+        std::vector<std::pair<std::string, int>> roster; // type -> count
+    };
+    std::vector<Trigger> triggers;
+    std::vector<TeamType> teamTypes;
+    std::vector<int> waypoints; // index -> cell (-1 = unset)
+
     static MapFile load(const std::string& iniPath);
 
     // Theater art extension: ".tem", ".sno" or ".int".

@@ -421,6 +421,9 @@ int main(int argc, char** argv) {
         const char* dumpPath = strArg(argc, argv, "--dump");
         int scale = intArg(argc, argv, "--scale", 1);
         int simTicks = intArg(argc, argv, "--sim-ticks", -1);
+        // Run the headless sim until a house wins (or a safety cap). Implies a
+        // headless run even without --sim-ticks; prints the winner and exits.
+        bool untilWin = flagArg(argc, argv, "--until-win");
 
         bool isTd = map.game == game::Game::TiberianDawn;
         std::string theaterDir, conquerDir, hiresDir, palPath, rulesPath;
@@ -586,6 +589,17 @@ int main(int argc, char** argv) {
         for (int cy = 0; cy < ch; cy++)
             for (int cx = 0; cx < cw; cx++)
                 bakeTerrainCell(cx0 + cx, cy0 + cy);
+
+        // Confine everything to the playable bounds. Cells outside
+        // [cx0,cx0+cw) x [cy0,cy0+ch) have no baked terrain, aren't rendered,
+        // and the camera can't scroll to them — so mark them impassable. Without
+        // this, units (e.g. reinforcements) can path into the un-arted border
+        // and disappear off the top/side of where you can scroll.
+        for (int c = 0; c < kSize * kSize; c++) {
+            int cx = c % kSize, cy = c / kSize;
+            if (cx < cx0 || cx >= cx0 + cw || cy < cy0 || cy >= cy0 + ch)
+                sim.setBlocked(c);
+        }
 
         // ---- Overlay layer (+ land effects: ore, walls) ----
         auto overlayAt = [&](int mx, int my) -> int {
@@ -819,6 +833,63 @@ int main(int argc, char** argv) {
             sim.addUnit(std::move(su), inf.cell);
         }
 
+        // Register building footprints (from the art — same source the renderer
+        // uses) so the skirmish AI can place structures and deploy its MCV.
+        {
+            int fw = 0, fh = 0;
+            auto reg = [&](const char* t) {
+                if (structFootprint(t, fw, fh))
+                    sim.setFootprint(t, fw, fh);
+            };
+            reg("fact");
+            for (const char* t : kTdStructTypes)
+                reg(t);
+            if (!isTd)
+                for (const char* t : kStructTypes)
+                    reg(t);
+        }
+
+        // Skirmish AI: every combatant house except the player is AI-controlled.
+        // On by default; --no-ai disables (e.g. to keep a passive-enemy sandbox
+        // or a deterministic movement regression). Headless runs only enable it
+        // when asked (--ai) or when running to a win (--until-win), so existing
+        // --sim-ticks probes stay reproducible. AI houses get a starting stipend.
+        bool headless = simTicks >= 0 || untilWin;
+        bool aiEnabled = headless ? (flagArg(argc, argv, "--ai") || untilWin)
+                                   : !flagArg(argc, argv, "--no-ai");
+        int aiCredits = intArg(argc, argv, "--ai-credits", 5000);
+        if (aiEnabled)
+            for (const auto& h : sim.combatants())
+                if (h != playerHouse) {
+                    sim.setAI(h, true);
+                    sim.setCredits(h, aiCredits);
+                }
+
+        // Scenario scripting: hand the parsed triggers/teamtypes/waypoints to
+        // the sim (Phase 7). Infantry vs vehicle is resolved from the shell's
+        // type lists so spawned team members get the right stats/kind.
+        auto isInfantryType = [&](const std::string& t) {
+            for (const char* i : kTdInfTypes)
+                if (t == i) return true;
+            for (const char* i : kInfTypes)
+                if (t == i) return true;
+            return !t.empty() && t[0] == 'c' && t.size() >= 2 &&
+                   std::isdigit((unsigned char)t[1]); // civilians c1-c10
+        };
+        for (const auto& t : map.triggers)
+            sim.addTrigger({t.name, t.event, t.action, t.house, t.team, t.data,
+                            t.persist});
+        for (const auto& tt : map.teamTypes) {
+            game::Sim::TeamTypeDef d;
+            d.name = tt.name;
+            d.house = tt.house;
+            for (const auto& [type, count] : tt.roster)
+                d.roster.push_back({type, count, isInfantryType(type)});
+            sim.addTeamType(d);
+        }
+        for (size_t i = 0; i < map.waypoints.size(); i++)
+            sim.setWaypoint(int(i), map.waypoints[i]);
+
         // Infantry SHP frame layout, mirroring the original's per-type
         // DoControls (IDATA.CPP). Each maneuver occupies `cycle` frames per
         // facing, starting at `frame`; the running frame is
@@ -896,6 +967,19 @@ int main(int argc, char** argv) {
         };
 
         auto buildDrawList = [&]() {
+            // Give any sim structure that appeared without shell involvement (AI
+            // builds, later reinforcements) a drawable. Player placements add
+            // their own — with a buildup anim — so skip ids already drawn or
+            // mid-buildup.
+            for (const auto& s : sim.structures()) {
+                bool known = false;
+                for (const auto& o : structures)
+                    if (o.structId == s.id) { known = true; break; }
+                for (const auto& b : buildups)
+                    if (b.sid == s.id) { known = true; break; }
+                if (!known)
+                    addStructDrawable(s.type, s.house, s.cell, s.id);
+            }
             std::vector<DrawObject> objects;
             for (auto s : structures) {
                 const auto* live = sim.findStructure(s.structId);
@@ -1023,7 +1107,7 @@ int main(int argc, char** argv) {
         };
 
         // ---- Headless sim run ----
-        if (simTicks >= 0) {
+        if (simTicks >= 0 || untilWin) {
             auto printUnits = [&](const char* tag) {
                 for (const auto& u : sim.units())
                     std::printf("%s unit %d %-5s %-8s cell %d,%d facing %d hp %d/%d%s%s\n",
@@ -1107,7 +1191,11 @@ int main(int argc, char** argv) {
             }
             for (auto [id, dest] : orders)
                 sim.orderMove({id}, dest);
-            for (int t = 0; t < simTicks; t++) {
+            // --until-win runs to a decision; a plain --sim-ticks run stops at N.
+            int maxTicks = simTicks >= 0 ? simTicks : 0;
+            if (untilWin && maxTicks == 0)
+                maxTicks = 100000; // ~1.85h of sim @ 15/s — a safety cap
+            for (int t = 0; t < maxTicks; t++) {
                 sim.tick();
                 if (deployId >= 0) {
                     if (const auto* mcv = sim.findUnit(deployId)) {
@@ -1163,9 +1251,27 @@ int main(int argc, char** argv) {
                     else if (ev.type == game::Sim::Event::OreDepleted)
                         std::printf("tick %d: ore depleted at %d,%d\n", t,
                                     ev.cell % kSize, ev.cell / kSize);
+                    else if (ev.type == game::Sim::Event::HouseDefeated)
+                        std::printf("tick %d: house %s DEFEATED\n", t,
+                                    ev.house.c_str());
                 }
                 processEvents();
+                if (untilWin && sim.missionResult() != game::Sim::MissionResult::None) {
+                    std::printf("tick %d: MISSION %s\n", t,
+                                sim.missionResult() == game::Sim::MissionResult::Won
+                                    ? "ACCOMPLISHED"
+                                    : "FAILED");
+                    break;
+                }
+                if (untilWin && sim.gameOver()) {
+                    std::printf("tick %d: WINNER %s\n", t, sim.winner().c_str());
+                    break;
+                }
             }
+            if (untilWin &&
+                sim.missionResult() == game::Sim::MissionResult::None &&
+                !sim.gameOver())
+                std::printf("no winner after %d ticks\n", maxTicks);
             printUnits("after: ");
             static const char* kCatName[] = {"building", "infantry", "vehicle"};
             for (int c = 0; c < 3; c++)
@@ -1279,6 +1385,10 @@ int main(int argc, char** argv) {
         // first frame so the starting roster doesn't trigger it.
         std::set<std::string> prevBuildable;
         bool buildableSeeded = false;
+        // Win/lose banner. Latched once the sim reports a decision: "" = playing,
+        // otherwise the player either accomplished the mission or failed it. When
+        // set, order input is ignored (the game is over).
+        enum class End { None, Won, Lost } ended = End::None;
 
         float camX = 0, camY = 0;
         const float kSpeed = 480.0f;
@@ -1501,6 +1611,11 @@ int main(int argc, char** argv) {
                     else if (s == SDLK_MINUS || s == SDLK_KP_MINUS)
                         resIndex = std::min(n - 1, resIndex + 1);
                 }
+                // Once the game is decided, ignore all commands (select, move,
+                // attack, build, sell/repair) — only the camera/quit stay live.
+                if (ended != End::None &&
+                    (e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEBUTTONUP))
+                    continue;
                 int maxScroll0 = maxScrollFor(int(visStructs.size()));
                 int maxScroll1 = maxScrollFor(int(visUnits.size()));
                 if (e.type == SDL_MOUSEWHEEL && mx >= viewW) {
@@ -1795,6 +1910,25 @@ int main(int argc, char** argv) {
                 sim.tick();
                 processEvents();
                 tickAcc -= kTickMs;
+            }
+            // Win/lose: latch the first decision and announce it once. Prefer
+            // the scenario's scripted result (Win/Lose triggers); otherwise fall
+            // back to the generic "last house standing". A loss takes precedence.
+            if (ended == End::None) {
+                auto mr = sim.missionResult();
+                bool lost = mr == game::Sim::MissionResult::Lost ||
+                            (mr == game::Sim::MissionResult::None &&
+                             sim.houseDefeated(playerHouse));
+                bool won = mr == game::Sim::MissionResult::Won ||
+                           (mr == game::Sim::MissionResult::None &&
+                            sim.gameOver() && sim.winner() == playerHouse);
+                if (lost) {
+                    ended = End::Lost;
+                    mixer.playEva("fail1");
+                } else if (won) {
+                    ended = End::Won;
+                    mixer.playEva("accom1");
+                }
             }
 
             const Uint8* keys = SDL_GetKeyboardState(nullptr);
@@ -2216,6 +2350,19 @@ int main(int argc, char** argv) {
                         curCursor = Cursor::Select;
                     }
                 }
+            }
+
+            // Win/lose banner, centered over the tactical viewport, above the HUD.
+            if (ended != End::None) {
+                const char* msg = ended == End::Won ? "MISSION ACCOMPLISHED"
+                                                    : "MISSION FAILED";
+                uint32_t col = ended == End::Won ? kGreen : 0xffff4030;
+                int tw = hudFont ? game::textWidth(*hudFont, msg) : int(std::strlen(msg) * 6);
+                int bw = tw + 40, bh = 22;
+                int bx = (viewW - bw) / 2;
+                int by = kTopBar + (winH - kTopBar - bh) / 2;
+                bevelPanel(wc, bx, by, bw, bh, kDark);
+                drawTextCentered(wc, hudFont, msg, bx, bw, by + 7, col);
             }
 
             if (cursor && !cursor->frames.empty()) {

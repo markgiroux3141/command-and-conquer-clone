@@ -72,6 +72,8 @@ int Sim::addUnit(Unit u, int cell) {
     }
     if (!playerHouse_.empty() && u.house == playerHouse_)
         reveal(cell, u.stats.sight);
+    if (!u.house.empty() && u.house != "Neutral")
+        combatants_.insert(u.house);
     units_.push_back(std::move(u));
     return units_.back().id;
 }
@@ -87,6 +89,8 @@ int Sim::addStructure(Structure s) {
                 blocked_[(scy + by) * kSize + scx + bx] = 1;
     if (!playerHouse_.empty() && s.house == playerHouse_)
         reveal(s.cell, s.stats.sight);
+    if (!s.house.empty() && s.house != "Neutral")
+        combatants_.insert(s.house);
     structures_.push_back(std::move(s));
     return structures_.back().id;
 }
@@ -147,6 +151,315 @@ bool Sim::passable(int cell, SpeedClass cls) const {
     if (blocked_[cell])
         return false;
     return rules_->landSpeed(land_[cell], cls) > 0;
+}
+
+bool Sim::hasAssets(const std::string& house) const {
+    for (const auto& s : structures_)
+        if (s.house == house && s.hp > 0)
+            return true;
+    for (const auto& u : units_)
+        if (u.house == house && u.hp > 0)
+            return true;
+    return false;
+}
+
+void Sim::evaluateDefeat() {
+    for (const auto& h : combatants_) {
+        if (defeated_.count(h) || hasAssets(h))
+            continue;
+        defeated_.insert(h);
+        Event ev;
+        ev.type = Event::HouseDefeated;
+        ev.house = h;
+        events_.push_back(ev);
+    }
+}
+
+std::string Sim::winner() const {
+    if (combatants_.size() < 2)
+        return {};
+    const std::string* alive = nullptr;
+    for (const auto& h : combatants_) {
+        if (defeated_.count(h))
+            continue;
+        if (alive)
+            return {}; // more than one side still standing
+        alive = &h;
+    }
+    return alive ? *alive : std::string{};
+}
+
+bool Sim::footprintOf(const std::string& type, int& w, int& h) const {
+    auto it = footprint_.find(type);
+    if (it == footprint_.end())
+        return false;
+    w = it->second.first;
+    h = it->second.second;
+    return true;
+}
+
+int Sim::aiFindBuildSpot(const std::string& house, int w, int h) const {
+    // Anchor the search on the construction yard, else any owned structure.
+    const Structure* anchor = nullptr;
+    for (const auto& s : structures_) {
+        if (s.house != house)
+            continue;
+        anchor = &s;
+        if (s.type == "fact")
+            break;
+    }
+    if (!anchor)
+        return -1;
+    int ax = anchor->cell % kSize, ay = anchor->cell / kSize;
+    // Spiral outward; canPlace enforces "footprint free + adjacent to a
+    // friendly structure", so the base stays contiguous.
+    for (int r = 1; r < 16; r++)
+        for (int dy = -r; dy <= r; dy++)
+            for (int dx = -r; dx <= r; dx++) {
+                if (std::max(std::abs(dx), std::abs(dy)) != r)
+                    continue;
+                int cx = ax + dx, cy = ay + dy;
+                if (cx < 0 || cy < 0 || cx + w > kSize || cy + h > kSize)
+                    continue;
+                if (canPlace(house, cy * kSize + cx, w, h))
+                    return cy * kSize + cx;
+            }
+    return -1;
+}
+
+void Sim::spawnTeam(const std::string& teamName) {
+    auto it = teamTypes_.find(teamName);
+    if (it == teamTypes_.end())
+        return;
+    const TeamTypeDef& tt = it->second;
+    // Anchor: the team's construction yard / first structure, else first unit,
+    // else the first valid waypoint (reinforcements with no base yet).
+    int anchor = -1;
+    for (const auto& s : structures_)
+        if (s.house == tt.house) { anchor = s.cell; if (s.type == "fact") break; }
+    if (anchor < 0)
+        for (const auto& u : units_)
+            if (u.house == tt.house) { anchor = u.cell(); break; }
+    if (anchor < 0)
+        for (int c : waypoints_)
+            if (c >= 0) { anchor = c; break; }
+    if (anchor < 0)
+        return;
+    int ax = anchor % kSize, ay = anchor / kSize;
+    for (const auto& m : tt.roster) {
+        if (m.type == "lst" || m.type == "boat") // no naval spawn support yet
+            continue;
+        for (int n = 0; n < m.count; n++) {
+            Unit u;
+            u.type = m.type;
+            u.house = tt.house;
+            u.infantry = m.infantry;
+            u.stats = rules_->unit(m.type, m.infantry ? UnitKind::Infantry
+                                                      : UnitKind::Vehicle);
+            u.turreted = hasTurretArt(m.type);
+            u.harvester = m.type == "harv";
+            u.facing = 128;
+            // Spiral out from the anchor for a free, passable cell.
+            bool placed = false;
+            for (int r = 0; r < 12 && !placed; r++)
+                for (int dy = -r; dy <= r && !placed; dy++)
+                    for (int dx = -r; dx <= r && !placed; dx++) {
+                        if (std::max(std::abs(dx), std::abs(dy)) != r)
+                            continue;
+                        int cx = ax + dx, cy = ay + dy;
+                        if (cx < 0 || cx >= kSize || cy < 0 || cy >= kSize)
+                            continue;
+                        int c = cy * kSize + cx;
+                        if (!passable(c, u.stats.speedClass))
+                            continue;
+                        if (!u.infantry && occupant_[c] != -1)
+                            continue;
+                        addUnit(std::move(u), c);
+                        placed = true;
+                    }
+        }
+    }
+}
+
+void Sim::runTriggerAction(const TriggerDef& d) {
+    if (d.action == "Win")
+        missionResult_ = MissionResult::Won;
+    else if (d.action == "Lose")
+        missionResult_ = MissionResult::Lost;
+    else if (d.action == "Reinforce." || d.action == "Create Team")
+        spawnTeam(d.team);
+    else if (d.action == "Production" || d.action == "Autocreate")
+        setAI(d.house, true); // wake the house's base-building / attack AI
+    // Other actions (superweapons, DZ, trigger chaining) are not modeled yet.
+}
+
+void Sim::tickTriggers() {
+    // Every TICKS_PER_MINUTE/10 ticks (~6s), starting at tick 90 (not 0), so a
+    // Time trigger with Data=N fires after N*90 ticks like the original.
+    if (triggers_.empty() || tickCount_ == 0 || tickCount_ % 90 != 0)
+        return;
+    bool anyDead = false;
+    for (auto& ts : triggers_) {
+        if (ts.dead)
+            continue;
+        const TriggerDef& d = ts.def;
+        bool fire = false;
+        if (d.event == "Time") {
+            if (--ts.counter <= 0) {
+                fire = true;
+                ts.counter = d.data; // re-arm (matters only for persistent ones)
+            }
+        } else if (d.event == "All Destr.") {
+            fire = houseDefeated(d.house);
+        } else if (d.event == "Bldgs Destr." || d.event == "No Factories") {
+            bool any = false;
+            for (const auto& s : structures_)
+                if (s.house == d.house) { any = true; break; }
+            fire = !any && combatants_.count(d.house) != 0;
+        }
+        if (!fire)
+            continue;
+        runTriggerAction(d);
+        if (!d.persist) {
+            ts.dead = true;
+            anyDead = true;
+        }
+    }
+    if (anyDead)
+        triggers_.erase(std::remove_if(triggers_.begin(), triggers_.end(),
+                                       [](const TriggerState& t) { return t.dead; }),
+                        triggers_.end());
+}
+
+void Sim::tickAI(const std::string& house) {
+    const bool nod = house == "BadGuy"; // side-specific building/unit choices
+
+    // 1. Deploy the MCV into a construction yard if we don't have one yet.
+    bool hasFact = false;
+    for (const auto& s : structures_)
+        if (s.house == house && s.type == "fact")
+            hasFact = true;
+    if (!hasFact) {
+        int w = 0, h = 0;
+        if (footprintOf("fact", w, h))
+            for (const auto& u : units_)
+                if (u.house == house && u.type == "mcv" && !u.moving()) {
+                    deployMcv(u.id, w, h); // erases the MCV; stop touching units_
+                    hasFact = true;
+                    break;
+                }
+    }
+
+    // 2. Tally what the base already has.
+    bool hasPower = false, hasProc = false, hasBarr = false, hasWar = false;
+    hasFact = false;
+    for (const auto& s : structures_) {
+        if (s.house != house)
+            continue;
+        if (s.type == "fact") hasFact = true;
+        else if (s.type == "nuke" || s.type == "nuk2") hasPower = true;
+        else if (s.type == "proc") hasProc = true;
+        else if (isBarracks(s.type)) hasBarr = true;
+        else if (isWarFactory(s.type)) hasWar = true;
+    }
+
+    // 3. Buildings: place a finished one, else queue the next in the tech chain.
+    Production& bslot = prod_[house].slot[size_t(ProdCat::Building)];
+    if (bslot.active() && bslot.ready) {
+        int w = 0, h = 0;
+        if (footprintOf(bslot.type, w, h)) {
+            int cell = aiFindBuildSpot(house, w, h);
+            if (cell >= 0)
+                placeBuilding(house, cell, w, h);
+        }
+    } else if (hasFact && !bslot.active()) {
+        int produced = 0, drained = 0;
+        power(house, produced, drained);
+        std::string want;
+        if (!hasPower || produced < drained + 20)
+            want = "nuke"; // power plant (keep a comfortable surplus)
+        else if (!hasProc)
+            want = "proc"; // refinery (needs a power plant)
+        else if (!hasBarr)
+            want = nod ? "hand" : "pyle";
+        else if (!hasWar)
+            want = nod ? "afld" : "weap";
+        if (!want.empty())
+            startProduction(house, want, UnitKind::Structure);
+    }
+
+    // 4. Infantry: keep a small rifle squad coming while we have a barracks.
+    Production& islot = prod_[house].slot[size_t(ProdCat::Infantry)];
+    if (hasBarr && !islot.active()) {
+        int inf = 0;
+        for (const auto& u : units_)
+            if (u.house == house && u.infantry)
+                inf++;
+        if (inf < 8)
+            startProduction(house, "e1", UnitKind::Infantry);
+    }
+
+    // 5. Vehicles: a harvester or two first (economy), then a tank line.
+    Production& vslot = prod_[house].slot[size_t(ProdCat::Vehicle)];
+    if (hasWar && !vslot.active()) {
+        int harv = 0, tanks = 0;
+        for (const auto& u : units_)
+            if (u.house == house) {
+                if (u.harvester) harv++;
+                else if (!u.infantry && u.type != "mcv") tanks++;
+            }
+        if (hasProc && harv < 2)
+            startProduction(house, "harv", UnitKind::Vehicle);
+        else if (tanks < 6)
+            startProduction(house, nod ? "ltnk" : "mtnk", UnitKind::Vehicle);
+    }
+
+    // 6. Idle harvesters go find ore.
+    for (auto& u : units_)
+        if (u.house == house && u.harvester &&
+            u.harvMode == Unit::Harv::None && !u.moving() && u.path.empty()) {
+            int ore = findOre(u.cell());
+            if (ore >= 0)
+                orderHarvest({u.id}, ore);
+        }
+
+    // 7. Attack waves: once we've massed enough armed units, send them all at
+    // the nearest enemy structure (else nearest enemy unit) on a cooldown.
+    int& cd = aiAttackCd_[house];
+    if (cd > 0)
+        cd--;
+    std::vector<int> force;
+    for (const auto& u : units_) {
+        if (u.house != house || u.harvester || u.type == "mcv" || !u.stats.primary)
+            continue;
+        force.push_back(u.id);
+    }
+    constexpr int kAttackThreshold = 5;
+    constexpr int kAttackPeriod = 450; // ~30s between waves at 15 ticks/s
+    if (cd == 0 && int(force.size()) >= kAttackThreshold) {
+        long long bestD = -1;
+        int targUnit = -1, targStruct = -1;
+        int ax = 0, ay = 0;
+        for (const auto& s : structures_)
+            if (s.house == house) { ax = s.cx(); ay = s.cy(); break; }
+        for (const auto& s : structures_) {
+            if (!housesEnemy(house, s.house))
+                continue;
+            long long dx = s.cx() - ax, dy = s.cy() - ay, d = dx * dx + dy * dy;
+            if (bestD < 0 || d < bestD) { bestD = d; targStruct = s.id; targUnit = -1; }
+        }
+        if (targStruct < 0)
+            for (const auto& u : units_) {
+                if (!housesEnemy(house, u.house))
+                    continue;
+                long long dx = u.x - ax, dy = u.y - ay, d = dx * dx + dy * dy;
+                if (bestD < 0 || d < bestD) { bestD = d; targUnit = u.id; targStruct = -1; }
+            }
+        if (targUnit >= 0 || targStruct >= 0) {
+            orderAttack(force, targUnit, targStruct);
+            cd = kAttackPeriod;
+        }
+    }
 }
 
 int Sim::moveCost(int cell, SpeedClass cls, bool diagonal) const {
@@ -617,8 +930,42 @@ int Sim::placeBuilding(const std::string& house, int cell, int w, int h) {
     st.h = h;
     st.stats = rules_->unit(slot.type, UnitKind::Structure);
     st.hp = st.stats.strength;
+    bool isRefinery = st.type == "proc";
     slot = Production{};
-    return addStructure(std::move(st));
+    int id = addStructure(std::move(st));
+    if (id >= 0 && isRefinery)
+        grantHarvester(house, cell, w, h); // refineries ship with a harvester
+    return id;
+}
+
+void Sim::grantHarvester(const std::string& house, int procCell, int w, int h) {
+    if (!rules_ || rules_->unit("harv", UnitKind::Vehicle).cost <= 0)
+        return;
+    Unit u;
+    u.type = "harv";
+    u.house = house;
+    u.stats = rules_->unit("harv", UnitKind::Vehicle);
+    u.harvester = true;
+    u.facing = 128;
+    int px = procCell % kSize, py = procCell / kSize;
+    // Spiral out from just below the footprint for a free, passable cell.
+    for (int r = 0; r < 8; r++)
+        for (int dy = -r; dy <= r; dy++)
+            for (int dx = -r; dx <= r; dx++) {
+                if (std::max(std::abs(dx), std::abs(dy)) != r)
+                    continue;
+                int x = px + w / 2 + dx, y = py + h + dy;
+                if (x < 0 || x >= kSize || y < 0 || y >= kSize)
+                    continue;
+                int c = y * kSize + x;
+                if (!passable(c, u.stats.speedClass) || occupant_[c] != -1)
+                    continue;
+                int id = addUnit(std::move(u), c);
+                int ore = findOre(c);
+                if (ore >= 0)
+                    orderHarvest({id}, ore);
+                return;
+            }
 }
 
 int Sim::deployMcv(int unitId, int w, int h) {
@@ -773,6 +1120,19 @@ void Sim::tickProduction() {
 
 void Sim::tick() {
     events_.clear();
+    // Skirmish AI thinks ~once a second, staggered per house so several AIs
+    // don't all fire on the same tick. Runs before movement/production so its
+    // orders take effect this tick. Deterministic: keyed off tickCount_ only.
+    if (!aiHouses_.empty()) {
+        int stagger = 0;
+        for (const auto& h : aiHouses_) {
+            if ((tickCount_ + stagger) % 15 == 0 && !defeated_.count(h))
+                tickAI(h);
+            stagger += 5;
+        }
+    }
+    tickTriggers();
+    tickCount_++;
     tickProduction();
     for (auto& u : units_) {
         bool wasMoving = u.moving();
@@ -804,6 +1164,7 @@ void Sim::tick() {
     structures_.erase(std::remove_if(structures_.begin(), structures_.end(),
                                      [](const Structure& s) { return s.hp <= 0; }),
                       structures_.end());
+    evaluateDefeat();
 }
 
 bool Sim::tickCombat(Unit& u) {

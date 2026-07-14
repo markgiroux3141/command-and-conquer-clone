@@ -1,121 +1,122 @@
-# Handoff — session 11 → Phase 7 (written 2026-07-14)
+# Handoff — session 12 → Phase 7 polish / Phase 8 (written 2026-07-14)
 
-Session 11 was another feedback-driven polish pass on the TD shell (sidebar
-build clock, placement hatch, infantry walk/fire animations synced to the
-weapon sound, per-column sidebar scroll, and several HUD fixes — all confirmed
-by the user). The engine is now a **solid, playable sandbox**. The next big step
-is **Phase 7 — AI & missions**, which is what turns it into an actual game.
+Session 12 landed **all of Phase 7 (AI & missions)**: win/lose conditions, a
+deterministic skirmish AI (base-building + attack waves), and mission scripting
+(triggers/teamtypes/waypoints), with TD **GDI mission 1** as the worked example.
+The engine is now an actual game: an enemy that builds and attacks, scripted
+reinforcements/waves, and a win/lose outcome. See the Phase 7 block + session-12
+log in `MILESTONES.md` for the full detail.
 
 ## Read first
 
-1. `MILESTONES.md` — the roadmap. Phase 7 is the block near the bottom; the
-   session-11 log entry (top of the log) + Phase 10 bullet list is the delta.
-2. `docs/original-source/06-houses-ai-missions.md` — **the key reference for
-   Phase 7.** Covers `HouseClass` (economy/power/AI state), the `Mission_*`
-   state machine, scenario `.INI` loading, triggers/teamtypes, `FactoryClass`,
-   and the base-building AI. Points into `reference/CnC_Tiberian_Dawn/`
-   (`HOUSE.CPP`, `TEAM.CPP`, `TEAMTYPE.CPP`, `TRIGGER.CPP`, the `MISSION*.CPP`).
+1. `MILESTONES.md` — Phase 7 is now ticked; the session-12 log entry is the delta
+   and lists the exact next-task candidates.
+2. `docs/original-source/06-houses-ai-missions.md` — still the key reference
+   (HouseClass AI, Mission_* state machine, triggers/teamtypes, reinforcements,
+   superweapons). The clone implements a *simplified* subset of this.
 3. `README.md` / `play.bat` — how to run.
-4. Source, only as needed (below).
 
 ## Current state (what compiles / plays)
 
 - Builds clean: `cmake --build build --config Release`. Sim is headless and
-  **deterministic** (don't break that — see below). `play.bat` runs TD mission 1.
-- **Playable sandbox**: build from the sidebar (prereqs/power/credits enforced),
-  place structures / deploy MCV, move + attack, harvest ore → credits, combat
-  with armor/warheads/projectiles, shroud. Auto-acquire works (idle armed units
-  fire on the nearest enemy in range; guarding units hold their post).
-- **HUD**: native-res render + letterbox scale, contextual `mouse.shp` cursors,
-  dynamic sidebar (cameos gated by prereqs, per-column scroll+arrows, build
-  clock, READY text), radar medallion→minimap, power bar, sell/repair, buildup
-  animations, EVA + unit-voice audio, music jukebox.
-- **What's missing (the Phase 7 gap): no win/lose, no enemy AI (it only
-  return-fires — never builds/expands/attacks), no mission scripting.** It's a
-  sandbox with a passive enemy.
+  **deterministic** — verified again this session (AI + triggers byte-identical
+  across runs). Don't break that (see Gotchas).
+- **Win/lose**: `Sim` latches a house defeated at zero assets, `winner()`/
+  `gameOver()`/`missionResult()` resolve the outcome; interactive shell shows a
+  MISSION ACCOMPLISHED/FAILED banner + EVA and freezes orders.
+- **Skirmish AI** (`Sim::setAI`/`tickAI`): deploys the MCV, builds the tech
+  chain (power→refinery→barracks→factory), trains rifles + harvesters + tanks,
+  and throws attack waves at the nearest enemy. On by default for enemy houses.
+  Refineries grant a free harvester so the economy sustains (if ore is reachable).
+- **Mission scripting**: `[Triggers]`/`[TeamTypes]`/`[Waypoints]` parse into
+  `MapFile`; the sim's trigger evaluator handles Time / All Destr. / Bldgs Destr.
+  → Win / Lose / Reinforce / Create Team / Production on the ~6s cadence.
+- **Playtested**: GDI mission 1 plays and is winnable (MISSION ACCOMPLISHED
+  confirmed). Camera now confines to the playable bounds (out-of-bounds cells
+  marked impassable) so units/reinforcements can't wander off the scrollable map.
 
-## Where the code lives (Phase 7 hook points)
+## Where the Phase-7 code lives
 
-- `src/game/sim.{h,cpp}` — the deterministic sim. `Sim::tick()` is the per-tick
-  entry; it already loops units (`tickUnit`/`tickAutoAcquire`/`tickHarvest`),
-  production (`tickProduction`), and projectiles. **Houses are just string keys**
-  (`"GoodGuy"`=GDI, `"BadGuy"`=Nod, `"Neutral"`=civilian) with a `credits_` map —
-  there is **no `HouseClass` struct and no game-over state yet**. Phase 7 adds
-  both.
-- `src/game_main.cpp` — the shell / render loop / input. `processEvents()` maps
-  sim `Event`s to SFX/EVA. A win/lose banner + end-of-game handling goes here.
-- `src/game/rules.{h,cpp}` + `td_rules.ini` — unit/structure/weapon stats.
-- `src/game/map.cpp` — scenario `.bin`/`.ini` loader (`loadTd`). Triggers/
-  teamtypes/waypoints would be parsed here from the `.ini` sections.
+- `src/game/sim.{h,cpp}` — all the sim-side work:
+  - Win/lose: `combatants_`/`defeated_`, `evaluateDefeat()`, `winner()`.
+  - AI: `aiHouses_`, `tickAI()`, `aiFindBuildSpot()`, `footprint_`/`setFootprint`,
+    `grantHarvester()`, attack cooldown `aiAttackCd_`.
+  - Scripting: `TriggerDef`/`TeamTypeDef`/`MissionResult`, `triggers_`,
+    `teamTypes_`, `waypoints_`, `tickTriggers()`/`runTriggerAction()`/
+    `spawnTeam()`. `tick()` calls AI + triggers up top (deterministic, keyed off
+    `tickCount_`).
+- `src/game/map.{h,cpp}` — `parseScripting()` fills `MapFile::triggers/
+  teamTypes/waypoints` (called from both RA `load` and TD `loadTd`).
+- `src/game_main.cpp` — the shell bridges map→sim: registers building footprints
+  (from the art), enables AI on enemy houses (`--no-ai`/`--ai`/`--ai-credits`),
+  translates the scripting sections, reconciles AI-placed structures into the
+  draw list (top of `buildDrawList`), latches the win/lose banner, and honors
+  `--until-win` headless.
 
-## Suggested Phase 7 order (smallest → biggest)
+## Suggested next work (Phase 7 polish, then Phase 8)
 
-1. **Win/lose conditions** (start here — small, high-impact). Add game-over
-   detection to the sim: a house is defeated when it has no structures and no
-   MCV/units left (TD `HouseClass::MPlayer_Defeated` / short-game logic). Expose
-   `Sim::winner()` / a defeated set; `game_main.cpp` shows a "MISSION
-   ACCOMPLISHED / FAILED" banner and stops issuing orders. Add a headless flag
-   (e.g. `--until-win`) so it's testable without the window.
-2. **Minimal skirmish AI** (the meat). Give each non-player house a `tickAI`
-   (rate-limited, not every tick): keep an MCV deployed, build power → refinery
-   → barracks/factory when it can afford it (reuse `startProduction`/
-   `placeBuilding`), train a few units, and send an attack group at the player's
-   base when it has N units. Reference: `HOUSE.CPP` `AI()` + TeamTypes, but a
-   simplified state machine is fine to start. Keep all randomness seeded so the
-   sim stays deterministic.
-3. **Mission scripting** (biggest). Parse `[Triggers]`/`[TeamTypes]`/`[CellTriggers]`
-   from the scenario `.ini` (see doc 06 + `TRIGGER.CPP`/`TEAMTYPE.CPP`); run a
-   trigger evaluator in the sim (events → actions: reinforce, win, lose, produce).
-   Then wire up **playable TD GDI mission 1**.
-
-## Gotchas / constraints
-
-- **Determinism is sacred.** The headless sim must stay reproducible (identical
-  run → identical hashes; this is how combat/economy were verified). Don't call
-  `SDL_GetTicks()`/wall-clock or unseeded RNG inside `sim.tick()` or anything it
-  calls. AI randomness must come from a seeded generator advanced in tick order.
-  (Render-only animation in `game_main.cpp` may use `SDL_GetTicks()` — e.g. the
-  infantry walk cycle does — because it never feeds back into the sim.)
-- **House names**: `GoodGuy`=GDI, `BadGuy`=Nod, `Neutral`=civilian.
-- **TD production factories**: infantry ← `pyle`/`hand`, vehicles ← `weap` **or**
-  `afld` (Nod builds vehicles at the Airstrip). Prereq chain: fact→powr→
-  barr/proc→weap. `startProduction`/`canProduce` already encode this — the AI
-  should go through them, not bypass them.
-- **Placement**: `Sim::canPlace(house, cell, w, h)` (footprint buildable+free and
-  adjacent to a friendly structure); `Sim::cellBuildable(cell)` for a single
-  cell. The AI needs a "find a buildable spot near my base" helper.
-- Infantry animation frame layout (if you touch it): STAND {0,1,1}, WALK
-  {16,6,6}, FIRE {64,N,N} per weapon, civilians walk at frame 56 — from
-  `IDATA.CPP` DoControls. Frame = `base + facing*cycle + (stage % cycle)`.
+1. **Coordinated TeamType missions.** Right now spawned team members just get
+   folded into the AI's generic attack wave. The originals script per-team
+   `Move:wpt`/`Attack`/`Guard` sequences (TEAM.CPP `Coordinate_*`). Retain the
+   TeamType mission list (parsed-past today) and drive spawned teams along it.
+2. **Real reinforcement entry.** Teams spawn near the house's base; the original
+   enters from the map edge / a waypoint, and `LST:` is a naval landing (skipped
+   today). Use `[Waypoints]` + map-edge pathing; add naval/air later.
+3. **More trigger coverage.** Superweapons (Ion/Nuke/Airstrike), `Built It`,
+   `Discovered`, `Credits`, cell triggers, trigger-destroys-trigger chaining.
+4. **AI depth.** Defensive-structure building (gun/gtwr/obli/sam), difficulty
+   (attack cadence + stipend), rebuild-destroyed-buildings, per-map `[Base]`
+   prebuilt list (INI.CPP:441 / BASE.CPP).
+5. **Phase 8**: main menu, in-game options, save/load; more EVA cues.
 
 ## Verification recipe
 
 ```
-# Build:
 cmake --build build --config Release
 
-# HUD screenshot (one frame, then quits) — sanity that render/sidebar still work:
-build\Release\game.exe data\assets\tiberian_dawn\nod\GENERAL\scb03ea.ini ^
-  data\assets\tiberian_dawn\nod --house GoodGuy --no-shroud --ui-shot out.bmp
-python -c "from PIL import Image; Image.open('out.bmp').save('out.png')"  # then Read the PNG
+# Win/lose + AI + triggers, headless (deterministic; enable AI with --ai):
+build\Release\game.exe data\assets\tiberian_dawn\gdi\GENERAL\scg01ea.ini ^
+  data\assets\tiberian_dawn\gdi --house GoodGuy --no-shroud --until-win --ai
+#   Reinforcement check: --sim-ticks 300 --ai then count "after: unit .*GoodGuy"
+#   (6 at t0 -> 9 at t300 -> 12 at t600 as GDI reinforcements arrive).
+#   Base-build check: --house BadGuy (GoodGuy becomes AI, has the MCV) --sim-ticks 4000 --ai
 
-# Headless sim (deterministic) — use for win/lose + AI logic without the window:
-build\Release\game.exe <map.ini> <root> --house GoodGuy --no-shroud --sim-ticks N ...
-#   existing debug flags: --build b|i|v,type  --place x,y  --deploy idx
-#   --move / --attack / --harvest / --select --dump sel.bmp  (see game_main.cpp arg parsing)
-# For Phase 7, add a headless win-condition flag and assert the winner.
+# HUD screenshot (one frame): --ui-shot out.bmp  (then PIL-convert + Read the PNG)
 
-# Interactive: play.bat (or the game.exe line above without --ui-shot).
+# For sim-level checks that need a controlled setup (win-latch, trigger actions,
+# AI-vs-AI to a winner) this session used throwaway exe targets wired into
+# CMakeLists (added, built, run, then removed). Re-add the same way if needed —
+# link `game SDL2::SDL2 SDL2::SDL2main`, use Sim + Rules::load("td_rules.ini"),
+# setFootprint/setOre/addUnit/setAI directly. All were deterministic.
 ```
+
+## Gotchas / constraints
+
+- **Determinism is sacred.** AI + triggers are keyed off `tickCount_` only — no
+  wall-clock, no unseeded RNG in `tick()`. The AI is fully deterministic (no RNG
+  yet); if you add difficulty jitter, seed it and advance in tick order.
+- AI think cadence = every 15 ticks (staggered per house). Trigger cadence =
+  every 90 ticks (`TICKS_PER_MINUTE/10`) starting at tick 90; a Time trigger
+  with `Data=N` fires after `N*90` ticks.
+- **Footprints** for AI placement come from the art via `Sim::setFootprint`
+  (shell registers `fact` + all struct types). A type with no footprint won't be
+  built by the AI.
+- House names: `GoodGuy`=GDI, `BadGuy`=Nod, `Neutral`=civilian (excluded from
+  combatants). AI is off for `playerHouse_`.
+- Economy needs reachable ore. scg01ea's GDI landing beach has none nearby, so
+  an AI there builds a base but stalls at 0 credits — that's the map, not a bug.
+  Synthetic tests with an ore patch confirm the full harvest→credits→army loop.
 
 ## Git / housekeeping
 
-- Session-11 work is committed & pushed to `main`. Working tree clean at handoff.
-- **Never commit game assets** (`data/`, `renders/` are gitignored — trademarks
-  stay out of any release; this is a personal-use clone). Only source + docs.
-- Commit message trailer in use: `Co-Authored-By: Claude ...`.
+- **Session-12 Phase 7 work is committed & pushed to `main`** (win/lose, AI,
+  mission scripting, bounds-confine camera fix). Working tree clean at handoff.
+- Temp test files (wintest/aitest/scripttest) were removed; `CMakeLists.txt` is
+  back to its original targets.
+- **Never commit game assets** (`data/`, `renders/` are gitignored).
+- Commit trailer in use: `Co-Authored-By: Claude ...`.
 
 ## Context handoff protocol
 
 At ~75% context: tick `MILESTONES.md`, add a session-log entry, rewrite this
-file for the next session, commit and push.
+file, commit and push.

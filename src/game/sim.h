@@ -1,8 +1,10 @@
 #pragma once
 #include <algorithm>
 #include <cstdint>
+#include <set>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "game/rules.h"
@@ -88,6 +90,21 @@ public:
     // One sidebar strip each: construction yard, barracks/tent, war factory.
     enum class ProdCat : uint8_t { Building, Infantry, Vehicle, Count };
 
+    // Scenario scripting (Phase 7). A trigger is an event → action pair; a
+    // TeamType is a named squad roster a trigger can spawn. The shell translates
+    // the parsed map sections into these and hands them to the sim.
+    enum class MissionResult { None, Won, Lost };
+    struct TriggerDef {
+        std::string name, event, action, house, team;
+        int data = 0;       // "Time": fires after data trigger-checks (×90 ticks)
+        bool persist = false; // false = fire once then remove (volatile)
+    };
+    struct TeamTypeDef {
+        std::string name, house;
+        struct Member { std::string type; int count = 0; bool infantry = false; };
+        std::vector<Member> roster;
+    };
+
     // One in-progress item (per house, per category). Credits are paid as
     // progress advances (like the original), so cancelling refunds `paid`.
     struct Production {
@@ -106,13 +123,15 @@ public:
     // Things that happened during the last tick(); the shell turns these
     // into animations/sound. Cleared at the start of every tick.
     struct Event {
-        enum Type { Impact, UnitDied, StructDied, OreDepleted, Fire } type;
+        enum Type { Impact, UnitDied, StructDied, OreDepleted, Fire,
+                    HouseDefeated } type;
         int x = 0, y = 0;              // world leptons
         int cell = -1;                 // OreDepleted: cell to redraw
         int damage = 0;                // damage dealt (anim size selection)
         const WarheadStats* warhead = nullptr; // Impact only
         const WeaponStats* weapon = nullptr;   // Fire only (for the report SFX)
         bool infantry = false;         // target was infantry
+        std::string house;             // HouseDefeated: the house that lost
     };
 
     Sim() : land_(kSize * kSize, Land::Clear), blocked_(kSize * kSize, 0),
@@ -161,6 +180,58 @@ public:
     }
     // A cell a unit of this class may stand in (terrain + static blockers).
     bool passable(int cell, SpeedClass cls) const;
+
+    // --- win / lose ---
+    // Combatant houses (every non-Neutral house that has ever owned an asset).
+    const std::set<std::string>& combatants() const { return combatants_; }
+    // Houses that have been eliminated (no structures and no units left). Once
+    // latched a house stays defeated. Emits an Event::HouseDefeated the tick it
+    // falls (TD HouseClass::MPlayer_Defeated / IsDefeated).
+    const std::set<std::string>& defeatedHouses() const { return defeated_; }
+    bool houseDefeated(const std::string& house) const {
+        return defeated_.count(house) != 0;
+    }
+    // The sole surviving combatant once every other combatant is defeated, else
+    // empty. Requires at least two combatants (a lone side never "wins").
+    std::string winner() const;
+    bool gameOver() const { return !winner().empty(); }
+
+    // --- skirmish AI ---
+    // Turn a simple base-building + attack AI on/off for a house. AI houses
+    // "think" on a fixed cadence (driven off the tick counter, so the sim stays
+    // deterministic) and reuse the ordinary production/placement/order paths:
+    // deploy the MCV, build power → refinery → barracks → factory, train a few
+    // units + harvesters, then throw attack waves at the nearest enemy.
+    void setAI(const std::string& house, bool on = true) {
+        if (on)
+            aiHouses_.insert(house);
+        else
+            aiHouses_.erase(house);
+    }
+    bool aiControlled(const std::string& house) const {
+        return aiHouses_.count(house) != 0;
+    }
+    // Register a structure type's footprint (cells). The AI needs these to place
+    // buildings; the shell derives them from the art. A type with no registered
+    // footprint simply won't be built by the AI.
+    void setFootprint(const std::string& type, int w, int h) {
+        footprint_[type] = {w, h};
+    }
+
+    // --- scenario scripting ---
+    void addTrigger(const TriggerDef& t) { triggers_.push_back({t, t.data, false}); }
+    void addTeamType(const TeamTypeDef& t) { teamTypes_[t.name] = t; }
+    void setWaypoint(int idx, int cell) {
+        if (idx < 0)
+            return;
+        if (idx >= int(waypoints_.size()))
+            waypoints_.resize(idx + 1, -1);
+        waypoints_[idx] = cell;
+    }
+    // Won/Lost once a Win/Lose trigger has fired (from the scenario's intended
+    // player's perspective); None while the mission is still in progress or the
+    // map has no such triggers.
+    MissionResult missionResult() const { return missionResult_; }
 
     // --- shroud ---
     bool explored(int cell) const {
@@ -255,11 +326,28 @@ private:
     void tickProduction();
     // Spawn a finished unit next to its factory; false if no room yet.
     bool spawnProduced(const std::string& house, const Production& p);
+    // A refinery arrives with a free harvester (like the original), spawned
+    // beside `procCell` and sent to gather. No-op if there's no room.
+    void grantHarvester(const std::string& house, int procCell, int w, int h);
     void tickProjectiles();
     // Applies weapon damage to whichever target the projectile chased.
     void impact(const Projectile& p);
     void killUnit(Unit& u);
     void killStructure(Structure& s);
+    // Does this house still own any live unit or structure?
+    bool hasAssets(const std::string& house) const;
+    // Latch newly-eliminated combatants and emit HouseDefeated events.
+    void evaluateDefeat();
+    // Evaluate scenario triggers on the ~6s cadence; run fired actions.
+    void tickTriggers();
+    void runTriggerAction(const TriggerDef& d);
+    // Spawn a TeamType's roster for its house near its base (or a waypoint).
+    void spawnTeam(const std::string& teamName);
+    // One AI "think" for a house (see setAI). Called on cadence from tick().
+    void tickAI(const std::string& house);
+    // A buildable footprint spot for `house` near its base, or -1.
+    int aiFindBuildSpot(const std::string& house, int w, int h) const;
+    bool footprintOf(const std::string& type, int& w, int& h) const;
     Unit* mutableUnit(int id);
     Structure* mutableStructure(int id);
     // Target center position; false if the target no longer exists.
@@ -272,6 +360,17 @@ private:
     std::vector<uint8_t> oreBails_; // harvestable bails per cell
     std::vector<uint8_t> oreGem_;   // 1 = the cell's ore is gems
     std::unordered_map<std::string, int> credits_;
+    std::set<std::string> combatants_; // non-Neutral houses that owned an asset
+    std::set<std::string> defeated_;   // combatants eliminated (latched)
+    std::set<std::string> aiHouses_;   // houses run by the skirmish AI
+    std::unordered_map<std::string, std::pair<int, int>> footprint_; // type -> w,h
+    std::unordered_map<std::string, int> aiAttackCd_; // per-house attack cooldown
+    int tickCount_ = 0;                // ticks elapsed (AI cadence / determinism)
+    struct TriggerState { TriggerDef def; int counter; bool dead; };
+    std::vector<TriggerState> triggers_;
+    std::unordered_map<std::string, TeamTypeDef> teamTypes_;
+    std::vector<int> waypoints_;       // waypoint index -> cell (-1 = unset)
+    MissionResult missionResult_ = MissionResult::None;
     struct HouseProd {
         Production slot[size_t(ProdCat::Count)];
     };

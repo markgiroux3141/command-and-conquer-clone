@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <stdexcept>
 
@@ -155,6 +156,64 @@ void parseObjects(const fmt::IniFile& ini, const char* section,
     }
 }
 
+// Parse the mission-scripting sections ([Triggers]/[TeamTypes]/[Waypoints]),
+// shared by both games. cellFn maps raw INI cell numbers to the engine grid.
+template <typename CellFn>
+void parseScripting(const fmt::IniFile& ini, MapFile& map, CellFn cellFn) {
+    // [Triggers]: Name=Event,Action,Data,House,Team,Persist (TRIGGER.CPP Fill_In).
+    if (const auto* sec = ini.section("Triggers")) {
+        for (const auto& [key, value] : sec->entries) {
+            auto f = splitCsv(value);
+            if (f.size() < 5)
+                continue;
+            MapFile::Trigger t;
+            t.name = key;
+            t.event = f[0];
+            t.action = f[1];
+            t.data = std::atoi(f[2].c_str());
+            t.house = f[3];
+            t.team = f[4];
+            t.persist = f.size() > 5 && std::atoi(f[5].c_str()) != 0;
+            map.triggers.push_back(std::move(t));
+        }
+    }
+    // [TeamTypes]: Name=House,<9 flags>,ClassCount,Class:Num...,MissionCount,...
+    // (TEAMTYPE.CPP Fill_In). We keep only the house + roster; the AI drives
+    // behaviour, so the scripted mission list is parsed past, not stored.
+    if (const auto* sec = ini.section("TeamTypes")) {
+        for (const auto& [key, value] : sec->entries) {
+            auto f = splitCsv(value);
+            if (f.size() < 11)
+                continue;
+            MapFile::TeamType tt;
+            tt.name = key;
+            tt.house = f[0];
+            int classCount = std::atoi(f[10].c_str());
+            for (int i = 0; i < classCount && 11 + i < int(f.size()); i++) {
+                const std::string& tok = f[11 + i];
+                size_t colon = tok.find(':');
+                if (colon == std::string::npos)
+                    continue;
+                tt.roster.emplace_back(toLower(tok.substr(0, colon)),
+                                       std::atoi(tok.c_str() + colon + 1));
+            }
+            map.teamTypes.push_back(std::move(tt));
+        }
+    }
+    // [Waypoints]: index=cell (-1 = unset). Sparse, so size to the max index.
+    if (const auto* sec = ini.section("Waypoints")) {
+        for (const auto& [key, value] : sec->entries) {
+            int idx = std::atoi(key.c_str());
+            int raw = std::atoi(value.c_str());
+            if (idx < 0)
+                continue;
+            if (idx >= int(map.waypoints.size()))
+                map.waypoints.resize(idx + 1, -1);
+            map.waypoints[idx] = raw < 0 ? -1 : cellFn(raw);
+        }
+    }
+}
+
 MapFile loadTd(fmt::IniFile& ini, const std::string& iniPath);
 
 } // namespace
@@ -202,6 +261,7 @@ MapFile MapFile::load(const std::string& iniPath) {
     parseObjects(ini, "SHIPS", map.units, false, identity);
     parseObjects(ini, "INFANTRY", map.infantry, true, identity);
     parseObjects(ini, "STRUCTURES", map.structures, false, identity);
+    parseScripting(ini, map, identity);
 
     if (const auto* terrain = ini.section("TERRAIN")) {
         for (const auto& [key, value] : terrain->entries) {
@@ -265,6 +325,7 @@ MapFile loadTd(fmt::IniFile& ini, const std::string& iniPath) {
     parseObjects(ini, "UNITS", map.units, false, identity);
     parseObjects(ini, "INFANTRY", map.infantry, true, identity);
     parseObjects(ini, "STRUCTURES", map.structures, false, identity);
+    parseScripting(ini, map, tdCell);
 
     // [OVERLAY] cell=NAME (tiberium ti1-ti12, walls, crates).
     if (const auto* overlay = ini.section("OVERLAY")) {
