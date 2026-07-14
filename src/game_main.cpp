@@ -532,6 +532,49 @@ std::vector<Mission> discoverCampaign(const std::string& seedIni, char side) {
     return out;
 }
 
+// Custom levels authored by mapedit ([Basic] NewINIFormat=1) sitting beside
+// `seedIni`, sorted by name. When a custom level is launched this makes the
+// menu list its folder-mates and the Post-mission "Next" cycle through them.
+// Empty if none — the caller then falls back to the single seed map.
+std::vector<Mission> discoverCustom(const std::string& seedIni) {
+    namespace fs = std::filesystem;
+    std::vector<Mission> out;
+    std::error_code ec;
+    fs::path dir = fs::path(seedIni).parent_path();
+    auto isCustom = [](const fs::path& p) {
+        std::ifstream f(p);
+        std::string line;
+        for (int n = 0; n < 40 && std::getline(f, line); n++) {
+            std::string s;
+            for (char c : line)
+                if (c != ' ' && c != '\t' && c != '\r')
+                    s += char(std::toupper((unsigned char)c));
+            if (s.rfind("NEWINIFORMAT=", 0) == 0)
+                return std::atoi(s.c_str() + 13) != 0;
+            if (!s.empty() && s[0] == '[' && s != "[BASIC]")
+                break; // past the header sections; not marked custom
+        }
+        return false;
+    };
+    for (auto& e : fs::directory_iterator(dir, ec)) {
+        if (ec || !e.is_regular_file())
+            continue;
+        if (toLower(e.path().extension().string()) != ".ini")
+            continue;
+        if (!isCustom(e.path()))
+            continue;
+        Mission m;
+        m.path = e.path().string();
+        m.code = toLower(e.path().stem().string());
+        m.name = toUpper(m.code);
+        m.briefing = "";
+        out.push_back(std::move(m));
+    }
+    std::sort(out.begin(), out.end(),
+              [](const Mission& a, const Mission& b) { return a.code < b.code; });
+    return out;
+}
+
 bool ptInRect(const SDL_Rect& r, int x, int y) {
     return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
 }
@@ -1320,14 +1363,41 @@ static Outcome runScenario(int argc, char** argv, const std::string& mapPath,
                 break;
             }
 
+        // AI difficulty (DifficultyClass): sets the attack-wave AlertTime
+        // cadence and the default starting stipend. --difficulty easy|normal|
+        // hard (default normal, matching the original's campaign default).
+        game::Sim::Difficulty diff = game::Sim::Difficulty::Normal;
+        int diffCredits = 5000;
+        if (const char* d = strArg(argc, argv, "--difficulty")) {
+            std::string ds = d;
+            for (auto& c : ds) c = char(std::tolower((unsigned char)c));
+            if (ds == "easy")      { diff = game::Sim::Difficulty::Easy; diffCredits = 3000; }
+            else if (ds == "hard") { diff = game::Sim::Difficulty::Hard; diffCredits = 8000; }
+            else                   { diff = game::Sim::Difficulty::Normal; diffCredits = 5000; }
+        }
+        sim.setDifficulty(diff);
+
+        // The scenario's single AI base ([Base]) belongs to the house opposite
+        // the player (BASE.CPP Read_INI). Hand it to that house; the awake AI
+        // rebuilds it in order. Empty [Base] → the AI uses its tech-chain
+        // fallback (see tickAI).
+        std::string baseHouse = playerHouse == "GoodGuy" ? "BadGuy" : "GoodGuy";
+        if (!map.base.empty()) {
+            std::vector<game::Sim::BaseNodeDef> nodes;
+            for (const auto& n : map.base)
+                nodes.push_back({n.type, n.cell});
+            sim.setBaseList(baseHouse, std::move(nodes));
+        }
+
         // Skirmish AI: on trigger-less skirmish maps, every combatant house
         // except the player is AI-controlled. On by default there; --no-ai
         // disables. Headless runs only enable it when asked (--ai) or when
-        // running to a win (--until-win). AI houses get a starting stipend.
+        // running to a win (--until-win). AI houses get a starting stipend
+        // (--ai-credits overrides the per-difficulty default).
         bool headless = simTicks >= 0 || untilWin;
         bool aiEnabled = headless ? (flagArg(argc, argv, "--ai") || untilWin)
                                    : !flagArg(argc, argv, "--no-ai");
-        int aiCredits = intArg(argc, argv, "--ai-credits", 5000);
+        int aiCredits = intArg(argc, argv, "--ai-credits", diffCredits);
         if (aiEnabled && !scripted)
             for (const auto& h : sim.combatants())
                 if (h != playerHouse) {
@@ -2997,8 +3067,12 @@ int main(int argc, char** argv) {
                                          : "Greece";
         char side = playerHouse == "BadGuy" ? 'b' : 'g';
         std::vector<Mission> missions = discoverCampaign(mapPath, side);
+        if (missions.empty())
+            // Not a campaign scenario: if the seed is a custom level, list all
+            // custom levels in its folder so the menu can pick between them.
+            missions = discoverCustom(mapPath);
         if (missions.empty()) {
-            // Custom/one-off map: make it the whole "campaign".
+            // Plain one-off map: make it the whole "campaign".
             Mission m;
             m.path = mapPath;
             m.code = std::filesystem::path(mapPath).stem().string();

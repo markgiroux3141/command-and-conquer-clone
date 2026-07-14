@@ -1,122 +1,120 @@
-# Handoff — session 14 → Track B continued (AI depth) (written 2026-07-14)
+# Handoff — session 15 → Track B continued (AI depth) (written 2026-07-14)
 
-Session 14 landed **AI campaign fidelity** (Track B). GDI mission 1 no longer
-rushes the player: the scripted Nod garrison holds position and only the scripted
-2-minigunner `NOD1` patrol advances, matching the original. See the Phase 7
-"AI campaign fidelity" checklist + session-14 log in `MILESTONES.md` for detail.
+Session 15 landed **awake-AI structure** (Track B item #1): the AI that runs on
+skirmish maps and on campaign houses woken by a Production/Autocreate trigger now
+builds a parsed `[Base]` list in order and attacks on a difficulty-driven
+`AlertTime` cadence, instead of a hardcoded tech-chain + fixed timer. Shipped,
+verified, and (about to be) pushed to main.
 
 ## Read first
 
-1. `MILESTONES.md` — Phase 7 "AI campaign fidelity" is now ticked; session-14
-   log is the delta. The Phase 7 "polish / known gaps" list is the Track B TODO.
-2. `docs/original-source/06-houses-ai-missions.md` — §4 TeamTypes/Teams
-   (`Coordinate_*`), §6 `HouseClass::AI` (alerted attack cadence / `AlertTime`,
-   `[Base]` base-building), §7 reinforcements (`Do_Reinforcements`).
-3. User memory `ai-campaign-fidelity-gap` — updated to reflect the fix.
+1. `MILESTONES.md` — Phase 7 "Awake-AI structure — [Base] + difficulty
+   AlertTime" is the new ticked item; the session-15 log is the delta.
+2. `docs/original-source/06-houses-ai-missions.md` — §6 `HouseClass::AI`
+   (`AlertTime` cadence, `Suggest_New_Object` / `Base.Next_Buildable`), §5
+   FactoryClass, §7 reinforcements (`Do_Reinforcements` — next task).
+3. User memory `ai-campaign-fidelity-gap` — updated with this session's work.
 
-## What session 14 changed (the AI fidelity work)
+## What session 15 changed (all deterministic, `tickCount_`-keyed)
 
-The problem was a **fidelity gap**: the original campaign enemy is scripted and
-restrained, but our engine ran a full always-on skirmish AI (+5000cr stipend)
-over the top of it, and the map loader dropped the two INI facts that encode the
-restraint. Fixed in three parts (all deterministic, `tickCount_`-keyed):
+Decisions confirmed with the user before building: default difficulty **Normal**,
+a global **`--difficulty`** flag, **hybrid** base-building.
 
-1. **Gating** (`src/game_main.cpp`, ~line 1300): a map with any `Win`/`Lose`
-   trigger is `scripted`; on those, the blanket `sim.setAI(h)` + stipend loop is
-   skipped (`if (aiEnabled && !scripted)`). Enemies are driven by their unit
-   orders + team scripts + triggers instead — exactly like `HouseClass::AI` with
-   an un-alerted house. A `Production`/`Autocreate` trigger still calls
-   `setAI(house)` via `runTriggerAction`, so a mission that *intends* an active
-   AI still gets one. Trigger-less skirmish maps are unchanged (full AI on).
-2. **Per-unit INI missions** honored:
-   - `map.{h,cpp}`: `Object::mission` retained (field 5 of `[UNITS]`/`[INFANTRY]`;
-     `parseObjects` gained a `hasMission` param — false for `[STRUCTURES]`, whose
-     field 5 is a trigger).
-   - `sim.h`: `Unit::Order {Guard, AreaGuard, Hunt}` + `orderCell`.
-     `game_main.cpp` `orderFor()` maps the string → order.
-   - `sim.cpp` `tickStandingOrders()`: `Hunt` seeks the nearest enemy;
-     `AreaGuard` leashes back to spawn if pulled >3 cells; `Guard` just holds
-     (auto-acquire already engages anything in range).
-3. **Coordinated TeamType missions**:
-   - `map.{h,cpp}`: `TeamType::missions` (`Mission:arg` list) parsed after the
-     class roster and retained.
-   - `sim.h`: `TeamTypeDef::Step` + a private `Team {id,house,script,step,...}`
-     + `teams_`. `spawnTeam` reserves a team id, tags each spawned member's
-     `teamId`, and pushes a `Team` when the script is non-empty.
-   - `sim.cpp` `tickTeams()`: replays `Move`/`Move to Cell` (advance when all
-     members within 2 cells; 40-tick stuck timeout), `Attack*`/`Rampage`
-     (re-engage nearest enemy; `Attack Base` prefers structures), `Guard`/etc.
-     (timed hold), `Loop` (restart). Runs on the ~1s cadence.
-
-Both new passes skip player-owned and skirmish-AI-owned houses and team members,
-so they only affect scripted enemies. `findNearestEnemy()` is a shared helper.
+1. **`[Base]` parsed + threaded** (`map.{h,cpp}`): `parseScripting` reads the
+   `[Base]` section (`Count=N`, then `NNN=TYPE,COORD` in index/build order). The
+   COORD is a packed lepton coordinate — decoded with `Coord_Cell` (FUNCTION.H):
+   `cell_x=(c>>8)&0xff`, `cell_y=(c>>24)&0xff`, engine cell `= cell_y*128+cell_x`
+   (correct for both TD 64-wide and RA). Stored in `MapFile::base`
+   (`{type, cell}` in build order). `game_main.cpp` hands it to the house
+   *opposite* the player (`baseHouse`, per BASE.CPP) via `Sim::setBaseList`.
+2. **Next_Buildable base-building** (`sim.{h,cpp}`): `Sim::aiNextBaseNode(house)`
+   returns the first list node the house owns fewer of than the list requires up
+   to that point (robust to exact placement). `tickAI` step 3 is now **hybrid**:
+   if a `[Base]` list exists, build/rebuild it in order (placing each at its
+   scripted cell when free, else near the base); with no list, fall back to the
+   old MCV-deploy + power→proc→barracks→factory chain (our `scm*` skirmish maps
+   ship `[Base] Count=0`, so they use the fallback and stay playable).
+3. **Difficulty + AlertTime** (`sim.{h,cpp}`, `game_main.cpp`): `Sim::Difficulty
+   {Easy,Normal,Hard}` + `setDifficulty`, set from `--difficulty` (default
+   Normal). `Sim::alertTime(house)` replaces the fixed 450 attack timer with the
+   per-tier range (Easy 16-40 min, Normal 5-20, Hard 4-10 — expressed in AI-think
+   ticks, since `tickAI` runs ~1/s), drawn by a deterministic FNV hash of
+   house+`tickCount_` (no RNG). The cooldown is **seeded once at wake** so the
+   first wave waits out a full cadence rather than rushing. Per-difficulty
+   starting stipend (Easy 3000 / Normal 5000 / Hard 8000; `--ai-credits` still
+   overrides).
 
 ## Current state (what compiles / plays)
 
-- Builds clean: `cmake --build build --config Release --target game_exe`
-  (exe is `game.exe`; `game` = static lib).
-- **Determinism preserved** — `--sim-ticks 900 --ai` on scg01ea is byte-identical
-  across two runs (sha1 `9C500155166F5AB6C63F823BFD766576C2513748` this session).
-- Verified scg01ea before/after via `--sim-ticks` probes; `--ui-shot` + the
-  interactive setup path load without crashing. Game-flow (Track A, session 13)
-  is untouched and still works.
+- Builds clean: `cmake --build build --config Release --target game_exe`.
+- **Determinism preserved.** scg03ea `--sim-ticks 8000 --ai --difficulty hard`
+  is byte-identical across two runs; scg01ea (no woken AI) is byte-identical to
+  the *committed* baseline (proof: stashed my diff, rebuilt, same hash).
+- **Baseline note:** the old handoff's scg01ea sha1 `9C500155…` is **stale** —
+  the committed HEAD now hashes `09041a48f364d64c7163461c8116d4850429fe67`
+  (drift predates this session; my diff does not touch the scg01ea path). Use
+  `09041a48…` as the new reference, or just check "twice = identical".
 
 ## Verification recipe
 
 ```
 cmake --build build --config Release --target game_exe
 
-# Determinism (must stay byte-identical): run twice, hash stdout.
-build\Release\game.exe data\assets\tiberian_dawn\gdi\GENERAL\scg01ea.ini ^
-  data\assets\tiberian_dawn\gdi --house GoodGuy --no-shroud --sim-ticks 900 --ai
+# Determinism (run twice, hash stdout — must match, not necessarily the old sha):
+build\Release\game.exe data\assets\tiberian_dawn\gdi\GENERAL\scg03ea.ini ^
+  data\assets\tiberian_dawn\gdi --house GoodGuy --no-shroud --sim-ticks 8000 ^
+  --ai --difficulty hard
 
-# Fidelity probe: dump BadGuy positions at tick 3000 — the 10 pre-placed E1
-# should hold their spawn cells; only NOD1 (2 E1) advances + dies attacking.
-#   (grep the "after:" lines for BadGuy; compare to the "before:" lines.)
-
-# Interactive: just launch (menu first). Play GDI mission 1 and confirm Nod
-# holds / sends a small patrol, not a base-built army.
-build\Release\game.exe data\assets\tiberian_dawn\gdi\GENERAL\scg01ea.ini ^
-  data\assets\tiberian_dawn\gdi --house GoodGuy
+# Fidelity: on scg03ea the woken Nod (Production trigger @ tick 270) should keep
+# all 15 prebuilt structures (intact [Base] => Next_Buildable builds nothing),
+# train from its Hand of Nod, and launch a wave ~tick 6300 (hard). Grep the
+# "after:" lines for BadGuy: structs unchanged, some units tagged (attacking).
+# Try --difficulty normal to see the wave land much later (~tick 17550).
 ```
 
-To eyeball a scripted enemy in motion, `--ui-shot out.bmp` renders one frame
-(shrouded at frame 0 — pass `--no-shroud` to see the whole map).
+To re-run the throwaway lib test (it was removed): re-create
+`src/tools/basetest.cpp` (a `game`-linked exe) covering `[Base]` parse,
+`aiNextBaseNode` ordering, `alertTime` cadence-by-difficulty, and the no-`[Base]`
+fallback — add a temp `basetest` target to `CMakeLists.txt`, build, run, remove.
 
 ## NEXT — Track B continued (as the user directs)
 
-In rough impact order (all in `MILESTONES.md` Phase 7 "polish / known gaps"):
-1. **Difficulty tiers + `AlertTime` cadence + `[Base]` gating** for *awake* AI
-   (§6). Session 14 gated the AI off for scripted houses rather than tuning it;
-   the next step is making the awake AI (skirmish maps + trigger-alerted campaign
-   houses) build only from a parsed `[Base]` list and attack on an
-   Easy/Normal/Hard `AlertTime` cadence. `[Base]` isn't parsed yet (INI.CPP:441).
-2. **Reinforcements at the map edge/shore via waypoints** (LST naval landing is
-   skipped; `spawnTeam` still spawns near the base). `Do_Reinforcements`
-   REINF.CPP:63 — enter from a waypoint / map edge and drive on.
-3. **RA-format campaign scripting** — RA triggers use a numeric event/action
-   format that the current TD-shaped string checks (`Win`/`Lose`/`Create Team`/
-   `Reinforce.`) don't match, so RA missions still run the old skirmish AI. If RA
-   campaign fidelity matters, add an RA trigger parser path.
-4. **Broaden trigger coverage**: superweapons (Ion/Nuke/Airstrike), `Built It`,
+In `MILESTONES.md` Phase 7 "polish / known gaps", rough impact order:
+1. **Reinforcements at the map edge/shore via waypoints** (`Do_Reinforcements`
+   REINF.CPP:63). Today `spawnTeam` spawns near the base; the original enters
+   from a waypoint / map edge (or by LST naval / A-plane) and drives on.
+2. **RA-format campaign scripting** — RA's numeric trigger event/action format
+   isn't matched by the TD-shaped string checks, so RA missions still run the
+   old skirmish AI. Add an RA trigger parser path if RA fidelity matters.
+3. **Broaden trigger coverage**: superweapons (Ion/Nuke/Airstrike), `Built It`,
    `Discovered`, `Credits`, cell triggers, trigger-chaining.
-5. **AI depth**: defensive structures (gun/gtwr/obli/sam), building rebuild.
+4. **AI depth**: *defensive*-structure building (gun/gtwr/obli/sam) beyond what
+   `[Base]` scripts.
 
 Later Phase 8: in-game OPTIONS menu (stub), save/load; more EVA cues.
 
-## Gotchas / constraints (unchanged)
+## Gotchas / constraints (unchanged + new)
 
-- **Determinism is sacred.** `Sim::tick` and the new `tickStandingOrders`/
-  `tickTeams` key off `tickCount_` only — no wall-clock / unseeded RNG. Re-verify
-  byte-identical `--sim-ticks --ai` runs after any sim change.
-- **Never commit game assets** (`data/`, `renders/` are gitignored).
-- The exe target is `game_exe` (OUTPUT_NAME `game`); `game` alone builds the lib.
-- `parseObjects` now takes a `hasMission` flag — pass `true` for units/infantry,
-  `false` for structures (their field 5 is a trigger, not a mission).
-- `Move to Cell` team steps use the raw INI cell arg without the TD 64→128
-  remap (unused by scg01ea; fix if a mission needs it).
-- `docs/REFACTOR_PLAN.md` is still untracked (a *future* decomposition plan,
-  unrelated to this work) — left for the user to commit if wanted.
+- **Determinism is sacred.** `alertTime` uses a deterministic FNV hash of
+  house+`tickCount_` — no wall-clock / unseeded RNG. Re-verify byte-identical
+  `--sim-ticks --ai` runs after any sim change.
+- **`tickAI` runs ~once per 15 ticks** (once/sec), so `aiAttackCd_` counts
+  *seconds* (AI-think units), not raw ticks — that's why `alertTime` ranges are
+  in think-units. (The old `kAttackPeriod=450` comment claiming "~30s" was
+  wrong; it was really 450 s.)
+- **`[Base]` COORD is a lepton coordinate**, not a cell — decode it, don't feed
+  it to `cellFn`. `Move to Cell` team steps still use the raw INI cell (unrelated
+  TODO).
+- The scg03ea `[Base]` is the enemy's *prebuilt* base, so on a normal run the AI
+  rebuilds only what combat destroys. To see it build from scratch, use a map
+  where the woken house has a ConYard but a gap in its base.
+- **Do not commit the user's pending map-editor work.** The tree also carries
+  unrelated uncommitted changes (`CMakeLists.txt`, `td_template_table.h`,
+  `tools/gen_td_template_table.py`, untracked `src/tools/mapconv.cpp`,
+  `mapedit.cpp`, `docs/REFACTOR_PLAN.md`) — the Phase 9 side-quest. Stage only
+  the AI files (`src/game/map.{h,cpp}`, `src/game/sim.{h,cpp}`,
+  `src/game_main.cpp`) + the two docs.
+- Exe target is `game_exe` (`OUTPUT_NAME game`); `game` alone builds the lib.
 
 ## Context handoff protocol
 

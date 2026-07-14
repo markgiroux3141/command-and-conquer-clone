@@ -238,6 +238,28 @@ void parseScripting(const fmt::IniFile& ini, MapFile& map, CellFn cellFn) {
             map.waypoints[idx] = raw < 0 ? -1 : cellFn(raw);
         }
     }
+    // [Base]: the AI's ordered pre-built base (BASE.CPP Read_INI). Count=N, then
+    // NNN=TYPE,COORD for i in 0..N-1 (index order = build order; the file lists
+    // them highest-first, so we read by formatted key, not entry order). COORD
+    // is a packed 32-bit lepton coordinate: cell_x=(c>>8)&0xff, cell_y=(c>>24)&
+    // 0xff (Coord_Cell, FUNCTION.H). We place it into the engine's 128-wide grid
+    // (cell_y*128 + cell_x) — the same top-left mapping cellFn applies, so both
+    // TD (64-wide) and RA resolve correctly.
+    int baseCount = ini.getInt("Base", "Count", 0);
+    for (int i = 0; i < baseCount; i++) {
+        char idx[8];
+        std::snprintf(idx, sizeof(idx), "%03d", i);
+        std::string entry = ini.get("Base", idx, "");
+        auto f = splitCsv(entry);
+        if (f.size() < 2)
+            continue;
+        long coord = std::atol(f[1].c_str());
+        int cx = int((coord >> 8) & 0xff), cy = int((coord >> 24) & 0xff);
+        MapFile::BaseNode node;
+        node.type = toLower(f[0]);
+        node.cell = cy * MapFile::kSize + cx;
+        map.base.push_back(std::move(node));
+    }
 }
 
 MapFile loadTd(fmt::IniFile& ini, const std::string& iniPath);

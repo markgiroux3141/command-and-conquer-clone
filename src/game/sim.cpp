@@ -341,6 +341,49 @@ void Sim::tickTriggers() {
                         triggers_.end());
 }
 
+int Sim::alertTime(const std::string& house) const {
+    // AlertTime range per difficulty (HOUSE.CPP:839-862), in AI-think ticks
+    // (~1/s, since tickAI runs once every 15 ticks): Easy 16-40 min, Normal
+    // 5-20 min, Difficult 4-10 min.
+    int lo, hi;
+    switch (difficulty_) {
+        case Difficulty::Easy: lo = 960;  hi = 2400; break;
+        case Difficulty::Hard: lo = 240;  hi = 600;  break;
+        case Difficulty::Normal:
+        default:               lo = 300;  hi = 1200; break;
+    }
+    // Deterministic pseudo-random in [lo,hi]: FNV-1a over the house name folded
+    // with the current tick. Keyed off tickCount_ only, so it varies wave to
+    // wave yet stays byte-identical across runs.
+    uint32_t h = 2166136261u;
+    for (char c : house)
+        h = (h ^ uint8_t(c)) * 16777619u;
+    h = (h ^ uint32_t(tickCount_)) * 16777619u;
+    h ^= h >> 15;
+    return lo + int(h % uint32_t(hi - lo + 1));
+}
+
+const Sim::BaseNodeDef* Sim::aiNextBaseNode(const std::string& house) const {
+    auto it = baseList_.find(house);
+    if (it == baseList_.end() || it->second.empty())
+        return nullptr;
+    // Tally what the house already owns, then walk the list in order: a node is
+    // "built" once the house owns as many of that type as the list has required
+    // up to and including it (Next_Buildable / Is_Built, BASE.CPP). The first
+    // shortfall is the next thing to (re)build; NULL means the base is complete.
+    std::unordered_map<std::string, int> owned;
+    for (const auto& s : structures_)
+        if (s.house == house && s.hp > 0)
+            owned[s.type]++;
+    std::unordered_map<std::string, int> need;
+    for (const auto& n : it->second) {
+        int required = ++need[n.type];
+        if (owned[n.type] < required)
+            return &n;
+    }
+    return nullptr;
+}
+
 void Sim::tickAI(const std::string& house) {
     const bool nod = house == "BadGuy"; // side-specific building/unit choices
 
@@ -373,27 +416,43 @@ void Sim::tickAI(const std::string& house) {
         else if (isWarFactory(s.type)) hasWar = true;
     }
 
-    // 3. Buildings: place a finished one, else queue the next in the tech chain.
+    // 3. Buildings. With a scripted [Base] list, (re)build exactly that, in
+    //    order (Next_Buildable) — faithful to a woken campaign house rebuilding
+    //    its base. Without one, fall back to the hardcoded tech chain so
+    //    trigger-less skirmish stays playable (hybrid per the session decision).
     Production& bslot = prod_[house].slot[size_t(ProdCat::Building)];
+    const bool hasBase = baseList_.count(house) && !baseList_.at(house).empty();
+    const BaseNodeDef* baseNode = hasBase ? aiNextBaseNode(house) : nullptr;
     if (bslot.active() && bslot.ready) {
         int w = 0, h = 0;
         if (footprintOf(bslot.type, w, h)) {
-            int cell = aiFindBuildSpot(house, w, h);
+            // Prefer the scripted node's own cell; else a free spot near base.
+            int cell = -1;
+            if (baseNode && baseNode->type == bslot.type &&
+                canPlace(house, baseNode->cell, w, h))
+                cell = baseNode->cell;
+            if (cell < 0)
+                cell = aiFindBuildSpot(house, w, h);
             if (cell >= 0)
                 placeBuilding(house, cell, w, h);
         }
     } else if (hasFact && !bslot.active()) {
-        int produced = 0, drained = 0;
-        power(house, produced, drained);
         std::string want;
-        if (!hasPower || produced < drained + 20)
-            want = "nuke"; // power plant (keep a comfortable surplus)
-        else if (!hasProc)
-            want = "proc"; // refinery (needs a power plant)
-        else if (!hasBarr)
-            want = nod ? "hand" : "pyle";
-        else if (!hasWar)
-            want = nod ? "afld" : "weap";
+        if (hasBase) {
+            if (baseNode)
+                want = baseNode->type; // rebuild the scripted base, in order
+        } else {
+            int produced = 0, drained = 0;
+            power(house, produced, drained);
+            if (!hasPower || produced < drained + 20)
+                want = "nuke"; // power plant (keep a comfortable surplus)
+            else if (!hasProc)
+                want = "proc"; // refinery (needs a power plant)
+            else if (!hasBarr)
+                want = nod ? "hand" : "pyle";
+            else if (!hasWar)
+                want = nod ? "afld" : "weap";
+        }
         if (!want.empty())
             startProduction(house, want, UnitKind::Structure);
     }
@@ -436,6 +495,12 @@ void Sim::tickAI(const std::string& house) {
     // 7. Attack waves: once we've massed enough armed units, send them all at
     // the nearest enemy structure (else nearest enemy unit) on a cooldown.
     int& cd = aiAttackCd_[house];
+    if (!aiSeeded_.count(house)) {
+        // First AlertTime is set when the house wakes (HouseClass ctor), so it
+        // waits out a full cadence before the opening wave rather than rushing.
+        aiSeeded_.insert(house);
+        cd = alertTime(house);
+    }
     if (cd > 0)
         cd--;
     std::vector<int> force;
@@ -445,7 +510,6 @@ void Sim::tickAI(const std::string& house) {
         force.push_back(u.id);
     }
     constexpr int kAttackThreshold = 5;
-    constexpr int kAttackPeriod = 450; // ~30s between waves at 15 ticks/s
     if (cd == 0 && int(force.size()) >= kAttackThreshold) {
         long long bestD = -1;
         int targUnit = -1, targStruct = -1;
@@ -467,7 +531,7 @@ void Sim::tickAI(const std::string& house) {
             }
         if (targUnit >= 0 || targStruct >= 0) {
             orderAttack(force, targUnit, targStruct);
-            cd = kAttackPeriod;
+            cd = alertTime(house); // next wave after a fresh AlertTime
         }
     }
 }

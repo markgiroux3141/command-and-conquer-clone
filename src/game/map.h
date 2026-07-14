@@ -79,9 +79,18 @@ struct MapFile {
         std::vector<std::pair<std::string, int>> roster;   // type -> count
         std::vector<std::pair<std::string, int>> missions; // mission -> argument
     };
+    // One entry of the AI's ordered pre-built base ([Base] section, BASE.CPP).
+    // The awake AI rebuilds this list in order (Next_Buildable). Belongs to the
+    // scenario's single AI house (the opposite of [Basic] Player, per BASE.CPP
+    // Read_INI); the shell assigns it to that house.
+    struct BaseNode {
+        std::string type; // building type, lowercased ("nuke", "proc", ...)
+        int cell = 0;      // engine 128-grid cell (decoded from the INI COORD)
+    };
     std::vector<Trigger> triggers;
     std::vector<TeamType> teamTypes;
     std::vector<int> waypoints; // index -> cell (-1 = unset)
+    std::vector<BaseNode> base; // AI pre-built base, in build order
 
     static MapFile load(const std::string& iniPath);
 

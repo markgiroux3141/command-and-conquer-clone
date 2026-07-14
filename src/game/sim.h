@@ -103,6 +103,9 @@ public:
     // TeamType is a named squad roster a trigger can spawn. The shell translates
     // the parsed map sections into these and hands them to the sim.
     enum class MissionResult { None, Won, Lost };
+    // AI aggression tier (DifficultyClass). Sets the attack-wave cadence
+    // (HouseClass::AI AlertTime, §6) and the starting credit stipend.
+    enum class Difficulty { Easy, Normal, Hard };
     struct TriggerDef {
         std::string name, event, action, house, team;
         int data = 0;       // "Time": fires after data trigger-checks (×90 ticks)
@@ -230,6 +233,17 @@ public:
     // footprint simply won't be built by the AI.
     void setFootprint(const std::string& type, int w, int h) {
         footprint_[type] = {w, h};
+    }
+    // AI aggression tier. Applies to every AI house (like a global skirmish
+    // setting); the original tracks it per-house, but one dial is enough here.
+    void setDifficulty(Difficulty d) { difficulty_ = d; }
+    Difficulty difficulty() const { return difficulty_; }
+    // A pre-built base node the awake AI rebuilds in order (Next_Buildable).
+    struct BaseNodeDef { std::string type; int cell = 0; };
+    // Give a house its ordered [Base] list. When present, tickAI builds/rebuilds
+    // exactly this list (in order) instead of the hardcoded tech-chain fallback.
+    void setBaseList(const std::string& house, std::vector<BaseNodeDef> nodes) {
+        baseList_[house] = std::move(nodes);
     }
 
     // --- scenario scripting ---
@@ -367,6 +381,14 @@ private:
     void tickTeams();
     // One AI "think" for a house (see setAI). Called on cadence from tick().
     void tickAI(const std::string& house);
+    // Ticks (AI-think units, ~1/s) until the next attack wave for `house`, drawn
+    // deterministically from the difficulty's AlertTime range (§6) — keyed off
+    // tickCount_ + house so it varies yet stays byte-identical across runs.
+    int alertTime(const std::string& house) const;
+    // The next unbuilt [Base] node for `house` (Next_Buildable): the first node
+    // whose type the house owns fewer of than the list requires up to that
+    // point. Returns nullptr when the base is complete or the house has none.
+    const BaseNodeDef* aiNextBaseNode(const std::string& house) const;
     // A buildable footprint spot for `house` near its base, or -1.
     int aiFindBuildSpot(const std::string& house, int w, int h) const;
     bool footprintOf(const std::string& type, int& w, int& h) const;
@@ -392,6 +414,9 @@ private:
     std::set<std::string> aiHouses_;   // houses run by the skirmish AI
     std::unordered_map<std::string, std::pair<int, int>> footprint_; // type -> w,h
     std::unordered_map<std::string, int> aiAttackCd_; // per-house attack cooldown
+    std::set<std::string> aiSeeded_;   // houses whose first AlertTime is set
+    std::unordered_map<std::string, std::vector<BaseNodeDef>> baseList_; // [Base]
+    Difficulty difficulty_ = Difficulty::Normal;
     int tickCount_ = 0;                // ticks elapsed (AI cadence / determinism)
     struct TriggerState { TriggerDef def; int counter; bool dead; };
     std::vector<TriggerState> triggers_;

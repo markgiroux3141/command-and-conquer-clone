@@ -254,6 +254,35 @@ so nothing overflows the 140px sidebar.
       nothing, and only the scripted `NOD1` 2-minigunner patrol walks waypoints
       0→1→2 and attacks (repelled ~tick 1540). Headless `--sim-ticks --ai`
       byte-identical across two runs.
+- [x] **Awake-AI structure — [Base] + difficulty AlertTime** (2026-07-14,
+      session 15): the *awake* AI (skirmish maps + campaign houses woken by a
+      Production/Autocreate trigger) now has real structure instead of a
+      hardcoded chain + fixed attack timer. (1) **`[Base]` parsed + gated**:
+      `map.cpp` reads the `[Base]` section (Count + `NNN=TYPE,COORD`, COORD
+      decoded via `Coord_Cell` — cell_x=(c>>8)&0xff, cell_y=(c>>24)&0xff → engine
+      cell) into `MapFile::base`; the shell hands it to the house opposite the
+      player (BASE.CPP). `Sim::aiNextBaseNode` (Next_Buildable) makes tickAI
+      (re)build exactly that list, in order — so a woken campaign house with an
+      intact prebuilt base builds *nothing*, and rebuilds only what's destroyed.
+      **Hybrid** (per session decision): with no `[Base]` (our `scm*` skirmish
+      maps have `Count=0`), it falls back to the old MCV-deploy + tech-chain so
+      skirmish stays playable. (2) **Difficulty tiers + AlertTime cadence**: a
+      `--difficulty easy|normal|hard` flag (default Normal, the original's
+      campaign default) sets `Sim::Difficulty`; `Sim::alertTime` replaces the
+      fixed 450-think attack timer with the per-difficulty `AlertTime` range
+      (§6: Easy 16-40 min, Normal 5-20, Hard 4-10 — in AI-think ticks since
+      tickAI runs ~1/s), drawn deterministically (FNV hash of house+tickCount_,
+      no RNG) and seeded once at wake so the first wave waits out a full cadence.
+      Per-difficulty starting stipend (Easy 3000 / Normal 5000 / Hard 8000;
+      `--ai-credits` overrides). **Verified** (throwaway `basetest`, then
+      removed): scg03ea `[Base]` decodes to 5 nodes at coherent cells (nuke →
+      (29,26)); Next_Buildable queues the missing node; AlertTime tightens with
+      difficulty (hard ≈420 thinks vs normal ≈1170) and is deterministic;
+      fallback still deploys + builds power first. On scg03ea `--sim-ticks --ai
+      --difficulty hard`: woken Nod keeps all 15 prebuilt structures (no
+      spurious rebuild), trains from its Hand of Nod, and launches a coordinated
+      wave ~tick 6300 — byte-identical across two runs. scg01ea (no woken AI)
+      unchanged vs the committed baseline.
 - [ ] Phase 7 polish / known gaps:
       - **Reinforcements spawn near the house's base**, not delivered at the map
         edge / shore. The originals bring them in from a waypoint or by LST
@@ -261,9 +290,6 @@ so nothing overflows the 140px sidebar.
         pass fix: spawn at the reinforcement waypoint + move onto the map;
         proper fix needs naval/air transport. (Reported: units "appearing out of
         nowhere" mid-map instead of at the shore — 2026-07-14, session 12.)
-      - **Difficulty tiers + AlertTime cadence + `[Base]` gating** for the awake
-        AI not yet done (session 14 gated the AI off for scripted houses rather
-        than tuning it; scg01ea's `[Base]` is empty so base-building was moot).
       - Team scripts cover the common missions; `Move to Cell` uses the raw cell
         arg (no TD 64→128 remap), and `Attack Tarcom`/`Unload`/naval `LST` legs
         are approximated or skipped.
@@ -272,8 +298,8 @@ so nothing overflows the 140px sidebar.
         RA missions keep the old skirmish behaviour.
       - Trigger coverage is a subset: no superweapons, `Built It`, `Discovered`,
         `Credits`, cell triggers, or trigger-chaining.
-      - AI has no defensive-structure building, building rebuild, or per-map
-        `[Base]` prebuilt list.
+      - AI builds/rebuilds its `[Base]` list now, but still won't add
+        *defensive* structures (gun/gtwr/obli/sam) beyond what the list scripts.
 
 ## Phase 8 — Audio & polish
 
@@ -323,20 +349,37 @@ so nothing overflows the 140px sidebar.
       1/2/4/8) so fences connect (verified by screenshot).
 - [ ] In-game options menu (the OPTIONS tab is a stub), save/load.
 
-## Phase 9 — Map editor (side quest; can start any time after Phase 4)
+## Phase 9 — Map editor ✅ (mapedit, 2026-07-14, session 13)
 
-Maps are pure data (template/icon grid + overlay grid + object lists), so an
-editor is mapview plus mouse input and a writer. Custom maps already load —
-skirmish maps are just INI files in `general/`.
+Maps are pure data (template/icon grid + overlay grid + object lists), so the
+editor is mapview plus mouse input and a writer. Built as a standalone SDL tool
+(`src/tools/mapedit.cpp`) reusing the `formats`/`game`/`render` libs, TD-first.
 
-- [ ] LCW encoder + MapPack/OverlayPack writer (naive literal-run encoding is
-      valid LCW — ~20 lines; round-trip test: load → save → load → compare)
-- [ ] Template stamp palette UI (browse/place templates, eyedropper from map)
-- [ ] Overlay + terrain-object placement (ore brush, walls, trees)
-- [ ] Playable-bounds editing, [Waypoints] (start positions), map INI metadata
+**Custom-level format** (own format, avoids the RA LCW encoder): `[Basic]
+NewINIFormat=1` marks it; terrain lives in an uncompressed sibling `.bin`
+(`kSize*kSize` cells × 2 bytes: template id, icon; 0xff = clear) with full
+128-wide identity cell numbering; TD-flavored content. Loads as
+`Game::TiberianDawn`. `MapFile::load` detects the marker → `loadCustom`;
+`MapFile::save` writes it. Ceiling is the engine's 128×128 grid (4× the TD
+original); going beyond needs `kSize` made runtime (see REFACTOR_PLAN follow-up).
+
+- [x] `MapFile::save` + `loadCustom` (map.cpp); `mapconv` round-trip verifier
+      (TD → custom → reload → diff; clean across all 3 theaters)
+- [x] Template stamp palette (theater-filtered, multi-cell footprint from the
+      regenerated `td_template_table.h` Width/Height); paint + fill fallback
+- [x] Overlay palette (walls/tiberium) + right-click erase; undo/redo (doc snapshot)
+- [x] Object palettes (structures/units/infantry, per-house via H) + spawn
+      waypoints; place on click, delete topmost on right-click
+- [x] Save validation (bounds, ≥1 spawn, stray objects, empty-map warnings)
+- [x] Game integration: `discoverCustom` lists every custom level in a folder in
+      the main menu; `data/custom/` convention + `edit.bat` / `play-custom.bat`
 - [ ] Smart terrain brushes (auto-pick shore/cliff transition pieces) — v2
+- [ ] In-window New-Level dialog (size chosen via CLI today) — v2
 
-Out of scope for now: multiplayer, VQA-driven campaign FMVs.
+Verified end-to-end: author in mapedit → save to `data/custom/` → loads and
+plays in the real game (HUD, radar, shroud, power, remapped units).
+
+Out of scope for now: multiplayer, VQA-driven campaign FMVs, RA-format output.
 
 ## Phase 10 — Tiberian Dawn pivot 🚧 (started 2026-07-13)
 
@@ -465,6 +508,27 @@ carries the delta. Update this file's checkboxes *before* writing a handoff.
 
 ### Session log
 
+- **2026-07-14 (session 15): Phase 7 polish — awake-AI structure (Track B #1).**
+  Gave the *awake* AI (skirmish + trigger-woken campaign houses) real structure:
+  a parsed `[Base]` list it (re)builds in order (Next_Buildable), and
+  difficulty-driven `AlertTime` attack cadence replacing the fixed timer. See
+  the Phase 7 "Awake-AI structure" checklist item for the full detail. Decisions
+  confirmed with the user up front: default **Normal**, a global **`--difficulty`**
+  flag, and **hybrid** base-building (use `[Base]` when present; fall back to the
+  hardcoded tech-chain when a house has an MCV/ConYard but no `[Base]`, since our
+  `scm*` skirmish maps ship `[Base] Count=0`). Threaded `[Base]` through
+  `map.{h,cpp}` (COORD→cell decode) → `Sim::setBaseList`; added `Sim::Difficulty`
+  + `--difficulty`, `Sim::alertTime` (deterministic FNV draw in the per-tier
+  range, no RNG), `Sim::aiNextBaseNode`, and a hybrid step-3 in `tickAI`.
+  Verified via a throwaway `basetest` (parse/Next_Buildable/AlertTime/fallback,
+  all pass — target + file then removed) plus scg03ea `--sim-ticks --ai
+  --difficulty hard` (woken Nod holds its 15 prebuilt structures, trains + sends
+  a wave ~tick 6300, byte-identical across runs) and scg01ea unchanged vs the
+  committed baseline. **Note:** the handoff's `9C500155` scg01ea baseline is
+  stale — the committed HEAD (unchanged by this diff) now hashes `09041a48`;
+  drift predates this session. **Next Track B:** reinforcement map-edge/LST
+  entry (#2), then RA-format scripting / broader triggers / defensive-structure
+  AI as the user directs.
 - **2026-07-14 (session 14): Phase 7 polish — AI campaign fidelity (Track B).**
   Fixed the "Nod rushes and obliterates the player in GDI mission 1" gap. Root
   cause was fidelity, not tuning: our engine ran a full always-on skirmish AI
