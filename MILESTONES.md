@@ -269,12 +269,25 @@ so nothing overflows the 140px sidebar.
       `fmt::AudFile` path; interactive launch stable. **Phase 8 audio complete.**
 - [ ] Sound fade/pan by on-screen distance (Sound_Effect pans by cell); more
       EVA cues (low power, base under attack, insufficient funds, new options).
-- [ ] **Main menu + game flow** (requested 2026-07-14, session 12): a front-end
-      menu (New Game / mission select / quit) and a **post-mission screen** —
-      right now MISSION ACCOMPLISHED/FAILED just freezes the game with no way
-      forward. After the banner, offer restart / next mission / return to menu
-      (TD shows a score screen then advances the campaign). Needs a simple game
-      state machine around the current single-map shell.
+- [x] **Main menu + game flow** (2026-07-14, session 13): a game-state machine
+      (`main()`: Menu → Mission → Post) now wraps the shell. The window/renderer/
+      mixer/fonts/cursor are created **once** and shared across every screen (new
+      `Shell` struct) — nothing churns between menu and missions. The old mission
+      body became `runScenario(argc, argv, mapPath, shell) -> Outcome`
+      (Won/Lost/Quit/ToMenu). **Main menu** (`runMainMenu`): scrollable mission
+      list (= mission select), a briefing panel (objective text parsed from
+      `GENERAL/mission.ini`), NEW GAME (mission 1) and QUIT. **Post-mission
+      screen** (`runPostMission`): MISSION ACCOMPLISHED/FAILED + NEXT MISSION
+      (won, if one exists) / RESTART MISSION / RETURN TO MENU. In-mission Esc now
+      returns to the menu; the win/lose banner holds ~3.5s (or any key/click)
+      then advances to the post screen. Campaign is auto-discovered from the seed
+      map's dir (`sc<g|b><NN>…ini`, sorted). Menus render at a fixed logical res,
+      letterbox-scaled (new `MenuCanvas`), so text stays legible at any window
+      size. `--no-menu`/`--ui-shot` drop straight into the seed mission (preserves
+      direct-launch + headless verification). Headless (`--sim-ticks`/
+      `--until-win`) is untouched and byte-identical. Verified: menu + post
+      screenshots render correctly; interactive launch opens the menu with no
+      crash; determinism re-confirmed.
 - [ ] In-game options menu (the OPTIONS tab is a stub), save/load.
 
 ## Phase 9 — Map editor (side quest; can start any time after Phase 4)
@@ -419,6 +432,28 @@ carries the delta. Update this file's checkboxes *before* writing a handoff.
 
 ### Session log
 
+- **2026-07-14 (session 13): Phase 8 — main menu + game flow (Track A).** Wrapped
+  the single-map shell in a game-state machine so it plays like a real game
+  instead of freezing on the win/lose banner. `main()` now runs Menu → Mission →
+  Post; the SDL window/renderer/mixer/fonts/cursor are created once and shared
+  via a new `Shell` struct (no window churn between screens). The old ~2000-line
+  mission body was extracted verbatim into `runScenario(argc, argv, mapPath,
+  shell) -> Outcome` (Won/Lost/Quit/ToMenu). New front-end: `runMainMenu`
+  (scrollable mission list doubling as mission select + a briefing panel parsed
+  from `GENERAL/mission.ini` + NEW GAME/QUIT) and `runPostMission` (accomplished/
+  failed + NEXT MISSION/RESTART/RETURN TO MENU). Campaign auto-discovered from
+  the seed map's directory (`sc<g|b><NN>…ini`, sorted); "next" advances the
+  index. In-mission Esc → menu; the banner holds ~3.5s (or any key/click) then
+  advances to Post. Menus use a `MenuCanvas` (fixed logical res, letterbox-scaled)
+  so text stays legible at any size. `--no-menu`/`--ui-shot` bypass the menu into
+  the seed mission (keeps direct-launch and all headless verification working).
+  **Determinism preserved** — headless `--sim-ticks --ai` byte-identical across
+  runs; the headless block is unchanged. Verified with throwaway env-gated
+  screenshot hooks (menu + post frames both render correctly; then removed) plus
+  a 3s interactive smoke launch (menu opens, no crash). **Next: Track B (Phase 7
+  polish)** — reinforcements at the map edge/shore via waypoints (LST landing),
+  coordinated TeamType missions, broader trigger coverage, AI depth; then Phase 8
+  options menu / save-load.
 - **2026-07-14 (session 12): Phase 7 — AI & missions.** All three Phase 7
   blocks landed and verified (see the Phase 7 checklist above). (1) **Win/lose**:
   combatant tracking + latched defeat + `Event::HouseDefeated`, `Sim::winner()`/

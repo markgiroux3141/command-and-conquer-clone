@@ -20,8 +20,10 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -402,22 +404,435 @@ void drawTextRight(game::Canvas& c, const std::optional<fmt::FntFile>& font,
     game::drawText(c, *font, text, xRight - game::textWidth(*font, text), y, argb);
 }
 
+// ============================ Phase 8: game flow ============================
+// A front-end main menu and a post-mission screen wrap the single-map shell,
+// turning it into a campaign: pick a mission, play it, then restart / advance
+// to the next / return to the menu. The SDL window is created once by main()
+// and shared across every screen (see Shell), so nothing flickers between them.
+
+// How a scenario run ended, driving the outer game-state machine (main()).
+enum class Outcome { Won, Lost, Quit, ToMenu };
+
+// Persistent interactive resources, created once by main() and reused across
+// every mission and menu screen so the window never churns between them.
+struct Shell {
+    SDL_Window* win = nullptr;
+    SDL_Renderer* renderer = nullptr;
+    game::AudioMixer* mixer = nullptr;
+    const std::optional<fmt::FntFile>* hudFont = nullptr; // never null; may hold nullopt
+    std::optional<fmt::ShpD2File>* cursor = nullptr;      // never null; may hold nullopt
+    // Presenter/view state that should persist across missions.
+    SDL_Surface* frameSurf = nullptr;
+    SDL_Texture* frameTex = nullptr;
+    int resIndex = 0;
+    bool fullscreen = false;
+};
+
+// One campaign scenario, for the menu.
+struct Mission {
+    std::string path;     // full .ini path
+    std::string code;     // stem, lowercased, e.g. "scg01ea"
+    std::string name;     // uppercased code (menu row label)
+    std::string briefing; // objective text from GENERAL/mission.ini (may be empty)
+};
+
+std::string toUpper(std::string s) {
+    for (auto& ch : s)
+        ch = char(std::toupper((unsigned char)ch));
+    return s;
+}
+std::string toLower(std::string s) {
+    for (auto& ch : s)
+        ch = char(std::tolower((unsigned char)ch));
+    return s;
+}
+
+// Word-wrap `text` to lines no wider than maxW pixels in `font`.
+std::vector<std::string> wrapText(const std::optional<fmt::FntFile>& font,
+                                  const std::string& text, int maxW) {
+    std::vector<std::string> lines;
+    if (!font)
+        return lines;
+    std::istringstream iss(text);
+    std::string word, cur;
+    while (iss >> word) {
+        std::string cand = cur.empty() ? word : cur + " " + word;
+        if (!cur.empty() && game::textWidth(*font, cand) > maxW) {
+            lines.push_back(cur);
+            cur = word;
+        } else {
+            cur = cand;
+        }
+    }
+    if (!cur.empty())
+        lines.push_back(cur);
+    return lines;
+}
+
+// The objective/briefing text for a scenario, from GENERAL/mission.ini
+// ([<CODE>] with numbered lines). Returns "" if the file/section is absent.
+std::string briefingFor(const std::string& dir, const std::string& code) {
+    std::ifstream f(dir + "/mission.ini");
+    if (!f)
+        return "";
+    std::string want = "[" + toUpper(code) + "]";
+    std::string line, out;
+    bool in = false;
+    while (std::getline(f, line)) {
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        if (!line.empty() && line[0] == ';')
+            continue;
+        if (!line.empty() && line[0] == '[') {
+            in = (toUpper(line) == want);
+            continue;
+        }
+        if (in) {
+            auto eq = line.find('=');
+            if (eq != std::string::npos) {
+                std::string v = line.substr(eq + 1);
+                if (!v.empty()) {
+                    if (!out.empty())
+                        out += ' ';
+                    out += v;
+                }
+            }
+        }
+    }
+    return out;
+}
+
+// Every campaign scenario (sc<side><digit>...ini) beside `seedIni`, sorted by
+// code. `side` is 'g' (GDI) or 'b' (Nod). Empty if none found (e.g. a custom
+// map) — the caller falls back to just the seed map.
+std::vector<Mission> discoverCampaign(const std::string& seedIni, char side) {
+    namespace fs = std::filesystem;
+    std::vector<Mission> out;
+    std::error_code ec;
+    fs::path seed(seedIni);
+    fs::path dir = seed.parent_path();
+    for (auto& e : fs::directory_iterator(dir, ec)) {
+        if (ec || !e.is_regular_file())
+            continue;
+        if (toLower(e.path().extension().string()) != ".ini")
+            continue;
+        std::string stem = toLower(e.path().stem().string());
+        if (stem.size() < 5 || stem[0] != 's' || stem[1] != 'c' || stem[2] != side ||
+            !std::isdigit((unsigned char)stem[3]))
+            continue; // skip mission.ini and the other side's scenarios
+        Mission m;
+        m.path = e.path().string();
+        m.code = stem;
+        m.name = toUpper(stem);
+        m.briefing = briefingFor(dir.string(), stem);
+        out.push_back(std::move(m));
+    }
+    std::sort(out.begin(), out.end(),
+              [](const Mission& a, const Mission& b) { return a.code < b.code; });
+    return out;
+}
+
+bool ptInRect(const SDL_Rect& r, int x, int y) {
+    return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+}
+
+// Renders a menu screen at a fixed logical resolution, letterbox-scaled to fill
+// the window (so text stays chunky/legible at any window size), and maps mouse
+// coords back into that logical space. Mirrors the in-mission present pipeline.
+class MenuCanvas {
+public:
+    MenuCanvas(SDL_Window* win, SDL_Renderer* renderer, int logicalH = 360)
+        : win_(win), renderer_(renderer), targetH_(logicalH) {}
+    ~MenuCanvas() {
+        if (tex_)
+            SDL_DestroyTexture(tex_);
+        if (surf_)
+            SDL_FreeSurface(surf_);
+    }
+    game::Canvas begin() {
+        int ow = 0, oh = 0;
+        SDL_GetRendererOutputSize(renderer_, &ow, &oh);
+        ow = std::max(1, ow);
+        oh = std::max(1, oh);
+        int lh = targetH_;
+        int lw = std::max(320, int(1LL * lh * ow / oh));
+        if (!surf_ || surf_->w != lw || surf_->h != lh) {
+            if (surf_)
+                SDL_FreeSurface(surf_);
+            if (tex_)
+                SDL_DestroyTexture(tex_);
+            surf_ = SDL_CreateRGBSurfaceWithFormat(0, lw, lh, 32, SDL_PIXELFORMAT_ARGB8888);
+            tex_ = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_ARGB8888,
+                                     SDL_TEXTUREACCESS_STREAMING, lw, lh);
+        }
+        w_ = lw;
+        h_ = lh;
+        return game::Canvas::wrap(surf_);
+    }
+    void present() {
+        int ow = 0, oh = 0;
+        SDL_GetRendererOutputSize(renderer_, &ow, &oh);
+        float s = std::min(float(ow) / w_, float(oh) / h_);
+        present_ = SDL_Rect{int((ow - w_ * s) / 2), int((oh - h_ * s) / 2),
+                            int(w_ * s), int(h_ * s)};
+        SDL_UpdateTexture(tex_, nullptr, surf_->pixels, surf_->pitch);
+        SDL_RenderClear(renderer_);
+        SDL_RenderCopy(renderer_, tex_, nullptr, &present_);
+        SDL_RenderPresent(renderer_);
+    }
+    // Window-space mouse coord -> logical frame pixel (DPI/letterbox-aware).
+    void toLogical(int wx, int wy, int& lx, int& ly) {
+        int ow = 0, oh = 0, ww = 0, wh = 0;
+        SDL_GetRendererOutputSize(renderer_, &ow, &oh);
+        SDL_GetWindowSize(win_, &ww, &wh);
+        float dpiX = ww ? float(ow) / ww : 1.0f, dpiY = wh ? float(oh) / wh : 1.0f;
+        float px = wx * dpiX, py = wy * dpiY;
+        float s = present_.w > 0 ? float(present_.w) / w_ : 1.0f;
+        lx = int((px - present_.x) / s);
+        ly = int((py - present_.y) / s);
+    }
+    int w() const { return w_; }
+    int h() const { return h_; }
+
+private:
+    SDL_Window* win_;
+    SDL_Renderer* renderer_;
+    int targetH_;
+    SDL_Surface* surf_ = nullptr;
+    SDL_Texture* tex_ = nullptr;
+    SDL_Rect present_{0, 0, 0, 0};
+    int w_ = 0, h_ = 0;
+};
+
+// A clickable text button: beveled panel + centered label, brighter on hover.
+// Returns the button's rect so the caller can hit-test the click.
+SDL_Rect menuButton(game::Canvas& c, const std::optional<fmt::FntFile>& font,
+                    const std::string& label, int x, int y, int w, int h, int mx,
+                    int my, bool enabled = true) {
+    SDL_Rect r{x, y, w, h};
+    bool hover = enabled && ptInRect(r, mx, my);
+    bevelPanel(c, x, y, w, h, hover ? 0xff6c6c60 : kFace, /*sunken=*/false);
+    uint32_t col = !enabled ? 0xff707068 : hover ? kGreen : kText;
+    int ty = y + (h - (font ? font->maxHeight : 8)) / 2;
+    drawTextCentered(c, font, label, x, w, ty, col);
+    return r;
+}
+
+// Toggle borderless fullscreen (shared by the menu screens; matches the
+// in-mission F11 / Alt+Enter handling).
+void handleFullscreenToggle(const SDL_Event& e, Shell& shell) {
+    if (e.type == SDL_KEYDOWN &&
+        (e.key.keysym.sym == SDLK_F11 ||
+         (e.key.keysym.sym == SDLK_RETURN && (e.key.keysym.mod & KMOD_ALT)))) {
+        shell.fullscreen = !shell.fullscreen;
+        SDL_SetWindowFullscreen(shell.win,
+                                shell.fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+    }
+}
+
+// Front-end main menu: NEW GAME (start mission 1), a scrollable mission list
+// (click any to play it — this is the mission select), and QUIT. Returns the
+// chosen mission index, or -1 to quit the app.
+int runMainMenu(Shell& shell, const std::vector<Mission>& missions,
+                const std::string& sideName) {
+    const std::optional<fmt::FntFile>& font = *shell.hudFont;
+    MenuCanvas mcv(shell.win, shell.renderer);
+    int scroll = 0;
+    int result = -2; // -2 = keep running, -1 = quit, >=0 = start mission
+    while (result == -2) {
+        int mx = 0, my = 0;
+        {
+            int wx = 0, wy = 0;
+            SDL_GetMouseState(&wx, &wy);
+            mcv.toLogical(wx, wy, mx, my);
+        }
+        game::Canvas c = mcv.begin();
+        int lw = mcv.w(), lh = mcv.h();
+
+        const int listX = 32, listW = 232, listTop = 74, rowH = 18;
+        const int btnH = 22, btnBot = lh - 30;
+        int visRows = std::max(1, (btnBot - 16 - listTop) / rowH);
+        int maxScroll = std::max(0, int(missions.size()) - visRows);
+        scroll = std::clamp(scroll, 0, maxScroll);
+
+        SDL_Rect newRect{}, quitRect{};
+        std::vector<SDL_Rect> rowRects(missions.size());
+        int hoverRow = -1;
+
+        SDL_Event e;
+        while (SDL_PollEvent(&e)) {
+            if (e.type == SDL_QUIT)
+                result = -1;
+            handleFullscreenToggle(e, shell);
+            if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE)
+                result = -1;
+            if (e.type == SDL_MOUSEWHEEL)
+                scroll = std::clamp(scroll - e.wheel.y, 0, maxScroll);
+            if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
+                int lx = 0, ly = 0;
+                mcv.toLogical(e.button.x, e.button.y, lx, ly);
+                if (ptInRect(newRect, lx, ly) && !missions.empty())
+                    result = 0;
+                else if (ptInRect(quitRect, lx, ly))
+                    result = -1;
+                else
+                    for (int i = 0; i < int(rowRects.size()); i++)
+                        if (ptInRect(rowRects[i], lx, ly))
+                            result = i;
+            }
+        }
+        if (result != -2)
+            break;
+
+        // ---- draw ----
+        for (int y = 0; y < lh; y++) {
+            uint32_t sh = uint32_t(16 + 20 * y / std::max(1, lh));
+            game::fillRect(c, 0, y, lw, 1, 0xff000000 | (sh << 16) | (sh << 8) | (sh + 4));
+        }
+        bevelPanel(c, 8, 8, lw - 16, lh - 16, kFace);
+        drawTextCentered(c, font, "MISSION SELECT", 0, lw, 20, kText);
+        drawTextCentered(c, font, sideName + " CAMPAIGN", 0, lw, 20 + (font ? font->maxHeight : 10),
+                         kGreen);
+
+        // Mission list.
+        bevelPanel(c, listX - 6, listTop - 6, listW + 12,
+                   btnBot - 8 - (listTop - 6), 0xff101008, /*sunken=*/true);
+        for (int vi = 0; vi < visRows; vi++) {
+            int i = scroll + vi;
+            if (i >= int(missions.size()))
+                break;
+            SDL_Rect r{listX, listTop + vi * rowH, listW, rowH - 2};
+            rowRects[i] = r;
+            bool hov = ptInRect(r, mx, my);
+            if (hov) {
+                hoverRow = i;
+                game::fillRect(c, r.x, r.y, r.w, r.h, 0xff2a3a2a);
+            }
+            drawTextCentered(c, font, missions[i].name, r.x, r.w, r.y + 2,
+                             hov ? kGreen : kText);
+        }
+
+        // Detail/briefing panel for the hovered (else first) mission.
+        int detX = listX + listW + 20, detW = lw - detX - 24;
+        if (detW > 60 && !missions.empty()) {
+            bevelPanel(c, detX - 6, listTop - 6, detW + 12,
+                       btnBot - 8 - (listTop - 6), 0xff141410, /*sunken=*/true);
+            int show = hoverRow >= 0 ? hoverRow : std::min(scroll, int(missions.size()) - 1);
+            drawTextCentered(c, font, missions[show].name, detX, detW, listTop, kGreen);
+            int by = listTop + (font ? font->maxHeight : 10) + 6;
+            for (const auto& ln :
+                 wrapText(font, missions[show].briefing.empty() ? "(no briefing)"
+                                                                : missions[show].briefing,
+                          detW - 8)) {
+                if (by > btnBot - 20)
+                    break;
+                if (font)
+                    game::drawText(c, *font, ln, detX + 2, by, kText);
+                by += (font ? font->maxHeight : 10) + 2;
+            }
+        }
+
+        // Buttons.
+        newRect = menuButton(c, font, "NEW GAME", listX, btnBot, 108, btnH, mx, my,
+                             !missions.empty());
+        quitRect = menuButton(c, font, "QUIT", listX + 124, btnBot, 108, btnH, mx, my);
+
+        mcv.present();
+        SDL_Delay(12);
+    }
+    return result;
+}
+
+// Result of the post-mission screen.
+enum class PostChoice { Restart, Next, Menu, Quit };
+
+// Post-mission screen shown after a mission is won or lost: NEXT MISSION (won,
+// if one exists), RESTART MISSION, and RETURN TO MENU. Esc = menu.
+PostChoice runPostMission(Shell& shell, Outcome outcome, bool hasNext,
+                          const Mission& current) {
+    const std::optional<fmt::FntFile>& font = *shell.hudFont;
+    MenuCanvas mcv(shell.win, shell.renderer);
+    bool won = outcome == Outcome::Won;
+    PostChoice result = PostChoice::Menu;
+    bool decided = false;
+    while (!decided) {
+        int mx = 0, my = 0;
+        {
+            int wx = 0, wy = 0;
+            SDL_GetMouseState(&wx, &wy);
+            mcv.toLogical(wx, wy, mx, my);
+        }
+        game::Canvas c = mcv.begin();
+        int lw = mcv.w(), lh = mcv.h();
+
+        int bw = 168, bh = 24, gap = 10;
+        int bx = (lw - bw) / 2;
+        int by = lh / 2 - 10;
+        SDL_Rect nextRect{}, restartRect{}, menuRect{};
+
+        SDL_Event e;
+        while (SDL_PollEvent(&e)) {
+            if (e.type == SDL_QUIT) {
+                result = PostChoice::Quit;
+                decided = true;
+            }
+            handleFullscreenToggle(e, shell);
+            if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE) {
+                result = PostChoice::Menu;
+                decided = true;
+            }
+            if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
+                int lx = 0, ly = 0;
+                mcv.toLogical(e.button.x, e.button.y, lx, ly);
+                if (won && hasNext && ptInRect(nextRect, lx, ly)) {
+                    result = PostChoice::Next;
+                    decided = true;
+                } else if (ptInRect(restartRect, lx, ly)) {
+                    result = PostChoice::Restart;
+                    decided = true;
+                } else if (ptInRect(menuRect, lx, ly)) {
+                    result = PostChoice::Menu;
+                    decided = true;
+                }
+            }
+        }
+        if (decided)
+            break;
+
+        // ---- draw ----
+        game::fillRect(c, 0, 0, lw, lh, 0xff0c0e10);
+        bevelPanel(c, 8, 8, lw - 16, lh - 16, kFace);
+        const char* title = won ? "MISSION ACCOMPLISHED" : "MISSION FAILED";
+        uint32_t tcol = won ? kGreen : 0xffff4030;
+        drawTextCentered(c, font, title, 0, lw, lh / 2 - 64, tcol);
+        drawTextCentered(c, font, current.name, 0, lw, lh / 2 - 46, kText);
+
+        if (won && hasNext) {
+            nextRect = menuButton(c, font, "NEXT MISSION", bx, by, bw, bh, mx, my);
+            by += bh + gap;
+        }
+        restartRect = menuButton(c, font, "RESTART MISSION", bx, by, bw, bh, mx, my);
+        by += bh + gap;
+        menuRect = menuButton(c, font, "RETURN TO MENU", bx, by, bw, bh, mx, my);
+
+        mcv.present();
+        SDL_Delay(12);
+    }
+    return result;
+}
+
 } // namespace
 
-int main(int argc, char** argv) {
-    if (argc < 3) {
-        std::fprintf(stderr,
-                     "usage: game <map.ini> <data-root> [--scale N] [--house H] [--no-shroud]\n"
-                     "            [--credits N] [--tech N] [--sim-ticks N] [--dump out.bmp]\n"
-                     "            [--move i,cx,cy]... [--attack i,j]... [--attack-struct i,sid]...\n"
-                     "            [--harvest i,cx,cy]... [--build b|i|v,type]... [--place cx,cy]\n"
-                     "            [--deploy i]\n"
-                     "  data-root example: data/assets/red_alert/allied\n");
-        return 2;
-    }
+// Load, set up, and run one scenario. Headless (--sim-ticks/--until-win) runs
+// the deterministic sim and returns; interactive runs the playable window using
+// the shared resources in `shell` and returns how the mission ended.
+static Outcome runScenario(int argc, char** argv, const std::string& mapPath,
+                           Shell& shell) {
     try {
-        auto map = game::MapFile::load(argv[1]);
+        auto map = game::MapFile::load(mapPath);
         std::string root = argv[2];
+        game::AudioMixer& mixer = *shell.mixer;
+        const std::optional<fmt::FntFile>& hudFont = *shell.hudFont;
         const char* dumpPath = strArg(argc, argv, "--dump");
         int scale = intArg(argc, argv, "--scale", 1);
         int simTicks = intArg(argc, argv, "--sim-ticks", -1);
@@ -453,30 +868,9 @@ int main(int argc, char** argv) {
         ArtCache art(theaterDir, conquerDir, hiresDir, map.theaterExt());
         auto rules = game::Rules::load(rulesPath);
 
-        // HUD fonts (Westwood .FNT). Optional: absent → HUD renders without text.
-        std::string fontDir =
-            isTd ? root + "/INSTALL/CCLOCAL" : root + "/INSTALL/REDALERT/local";
-        auto loadFont = [](const std::string& p) -> std::optional<fmt::FntFile> {
-            try {
-                return fmt::FntFile::load(p);
-            } catch (const std::exception&) {
-                return std::nullopt;
-            }
-        };
-        std::optional<fmt::FntFile> font6 = loadFont(fontDir + "/6point.fnt");
-        std::optional<fmt::FntFile> font8 = loadFont(fontDir + "/8point.fnt");
-        // 8point is the compact, legible HUD face; 6point (larger) is a fallback.
-        const std::optional<fmt::FntFile>& hudFont = font8.has_value() ? font8 : font6;
-        if (!hudFont)
-            std::printf("note: no HUD font at %s (text disabled)\n", fontDir.c_str());
-
-        // Sound mixer: opened only for the interactive window (init() below);
-        // stays silent in headless runs, so processEvents()'s SFX are no-ops.
-        game::AudioMixer mixer;
-        mixer.setSoundDir(root + "/SOUNDS");
-        mixer.setMusicDir(root + "/SCORES");
-        // EVA speech ships only on the Covert Ops disc (like the cameos).
-        mixer.setEvaDir(root + "/../covert_ops/AUD1/SPEECH");
+        // HUD fonts (hudFont) and the audio mixer are created once by main() and
+        // shared via `shell` (see the bindings at the top of this function), so
+        // they persist across missions and menu screens.
 
         // House->remap: TD builds its remap in code (placeholder band ->
         // per-house block); RA uses PALETTE.CPS. Cached by house name.
@@ -501,8 +895,9 @@ int main(int argc, char** argv) {
 
         std::printf("%s: theater %s, bounds %d,%d %dx%d, %zu units, %zu infantry, "
                     "%zu structures\n",
-                    argv[1], map.theater.c_str(), map.x, map.y, map.width, map.height,
-                    map.units.size(), map.infantry.size(), map.structures.size());
+                    mapPath.c_str(), map.theater.c_str(), map.x, map.y, map.width,
+                    map.height, map.units.size(), map.infantry.size(),
+                    map.structures.size());
 
         const int cx0 = map.x, cy0 = map.y, cw = map.width, ch = map.height;
         constexpr int kSize = game::MapFile::kSize;
@@ -1312,69 +1707,36 @@ int main(int argc, char** argv) {
                     throw std::runtime_error(SDL_GetError());
                 std::printf("wrote %s (%dx%d)\n", dumpPath, outSurf->w, outSurf->h);
             }
-            return 0;
+            return Outcome::Quit; // headless: value unused by main()
         }
 
         // ---- Interactive: fixed-tick sim + free-running render ----
-        if (SDL_Init(SDL_INIT_VIDEO) != 0)
-            throw std::runtime_error(SDL_GetError());
+        // The window/renderer/cursor/mixer/fonts were created once by main() and
+        // live in `shell`; bind them here so the mission loop reuses them across
+        // restarts and menu transitions without recreating the window.
+        SDL_Window* win = shell.win;
+        SDL_Renderer* renderer = shell.renderer;
+        bool& fullscreen = shell.fullscreen; // toggled with F11 / Alt+Enter
         int viewW = std::min(mapSurf->w, 1280 - kSidebarW);
         int winW = viewW + kSidebarW, winH = std::min(mapSurf->h, 800);
-        SDL_Window* win = SDL_CreateWindow("game", SDL_WINDOWPOS_CENTERED,
-                                           SDL_WINDOWPOS_CENTERED, winW, winH,
-                                           SDL_WINDOW_RESIZABLE);
-        if (!win)
-            throw std::runtime_error(SDL_GetError());
-        bool fullscreen = false; // toggled with F11 / Alt+Enter
 
         // Render pipeline: the whole HUD is drawn each frame into an offscreen
         // ARGB surface (frameSurf) at a *logical* pixel resolution, uploaded to
         // a streaming texture, and presented via SDL_RenderCopy into a
         // letterbox rect (aspect-preserving) computed by hand in the present
-        // step. Windowed: the logical size tracks the window's pixel size 1:1
-        // (native-res, and a bigger window shows more map). Fullscreen: the
-        // logical size freezes at the last windowed size and is scaled up to
-        // fill the display, so a small map no longer sits tiny in a black field.
-        // Mouse coords are mapped back through the same rect (see toLogical),
-        // measuring the window→output pixel ratio so it stays correct under OS
-        // display scaling.
-        SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0"); // nearest — crisp pixels
-        SDL_Renderer* renderer = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED);
-        if (!renderer)
-            renderer = SDL_CreateRenderer(win, -1, 0); // software fallback
-        if (!renderer)
-            throw std::runtime_error(SDL_GetError());
-        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255); // black letterbox bars
+        // step. Mouse coords are mapped back through the same rect (see
+        // toLogical), measuring the window→output pixel ratio so it stays
+        // correct under OS display scaling. frameSurf/frameTex persist in shell.
         int logicalW = 0, logicalH = 0; // current frameSurf/frameTex size
-        SDL_Surface* frameSurf = nullptr;
-        SDL_Texture* frameTex = nullptr;
+        SDL_Surface*& frameSurf = shell.frameSurf;
+        SDL_Texture*& frameTex = shell.frameTex;
 
-        SDL_ShowCursor(SDL_DISABLE);
-        // mouse.shp is Dune II-format (per-frame sizes). TD ships it in the
-        // local UI dir (CCLOCAL / covert-ops LOCAL), not CONQUER; RA in hires.
-        std::optional<fmt::ShpD2File> cursor;
-        std::vector<std::string> cursorPaths =
-            isTd ? std::vector<std::string>{fontDir + "/mouse.shp",
-                                            root + "/INSTALL/LOCAL/mouse.shp",
-                                            conquerDir + "/mouse.shp"}
-                 : std::vector<std::string>{hiresDir + "/mouse.shp",
-                                            root + "/INSTALL/REDALERT/lores/mouse.shp"};
-        for (const auto& p : cursorPaths) {
-            try {
-                cursor = fmt::ShpD2File::load(p);
-                break;
-            } catch (const std::exception&) {
-            }
-        }
-        if (!cursor) {
-            std::printf("note: no cursor art found, using OS cursor\n");
-            SDL_ShowCursor(SDL_ENABLE);
-        }
+        // mouse.shp cursor (Dune II-format) was loaded once by main().
+        std::optional<fmt::ShpD2File>& cursor = *shell.cursor;
+        SDL_ShowCursor(cursor ? SDL_DISABLE : SDL_ENABLE);
 
-        // Audio: open the device and set up a simple score jukebox (each track
-        // plays once; the render loop starts the next when one finishes).
-        if (!mixer.init())
-            std::printf("note: audio unavailable, running silent\n");
+        // Score jukebox (each track plays once; the render loop starts the next
+        // when one finishes). The audio device was opened once by main().
         static const char* kScores[] = {"aoi", "ccthang", "ind",
                                         "ind2", "fwp", "heavyg"};
         int musicIdx = 0;
@@ -1389,6 +1751,14 @@ int main(int argc, char** argv) {
         // otherwise the player either accomplished the mission or failed it. When
         // set, order input is ignored (the game is over).
         enum class End { None, Won, Lost } ended = End::None;
+        // How this scenario run ends, returned to main()'s game-state machine.
+        // Defaults to Quit (window closed); Esc mid-mission returns to the menu;
+        // an outcome (won/lost) advances to the post-mission screen after a
+        // brief banner. endMs marks when `ended` latched; advanceEnd short-cuts
+        // the banner wait on any key/click.
+        Outcome result = Outcome::Quit;
+        uint32_t endMs = 0;
+        bool advanceEnd = false;
 
         float camX = 0, camY = 0;
         const float kSpeed = 480.0f;
@@ -1404,7 +1774,7 @@ int main(int argc, char** argv) {
         // height is picked from presets; width follows the display's aspect. +/-
         // cycles it. 360 ≈ the original SVGA zoom on a 16:9 display.
         static const int kResHeights[] = {360, 480, 600, 720, 900};
-        int resIndex = 0;
+        int& resIndex = shell.resIndex; // persists across missions/menu
         // Build sidebar show/hide (SIDEBAR tab); `slide` animates 1→0 as it
         // retracts off the right edge and the tactical view widens to fill.
         bool sidebarOn = true;
@@ -1584,15 +1954,21 @@ int main(int argc, char** argv) {
                     e.button.x = lx;
                     e.button.y = ly;
                 }
-                if (e.type == SDL_QUIT)
+                if (e.type == SDL_QUIT) {
+                    result = Outcome::Quit; // window closed → exit the app
                     quit = true;
+                }
                 if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE) {
-                    if (!placingType.empty())
+                    if (ended != End::None)
+                        ; // banner up; the advance handler below dismisses it
+                    else if (!placingType.empty())
                         placingType.clear(); // keep the building ready
                     else if (sideMode != SideMode::None)
                         sideMode = SideMode::None; // cancel sell/repair mode
-                    else
+                    else {
+                        result = Outcome::ToMenu; // abort mission → main menu
                         quit = true;
+                    }
                 }
                 // Fullscreen toggle: F11, or Alt+Enter.
                 if (e.type == SDL_KEYDOWN &&
@@ -1611,11 +1987,15 @@ int main(int argc, char** argv) {
                     else if (s == SDLK_MINUS || s == SDLK_KP_MINUS)
                         resIndex = std::min(n - 1, resIndex + 1);
                 }
-                // Once the game is decided, ignore all commands (select, move,
-                // attack, build, sell/repair) — only the camera/quit stay live.
-                if (ended != End::None &&
-                    (e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEBUTTONUP))
-                    continue;
+                // Once the game is decided, any key/click dismisses the banner
+                // and advances to the post-mission screen; all other commands
+                // (select, move, attack, build, sell/repair) are ignored.
+                if (ended != End::None) {
+                    if (e.type == SDL_KEYDOWN || e.type == SDL_MOUSEBUTTONDOWN)
+                        advanceEnd = true;
+                    if (e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEBUTTONUP)
+                        continue;
+                }
                 int maxScroll0 = maxScrollFor(int(visStructs.size()));
                 int maxScroll1 = maxScrollFor(int(visUnits.size()));
                 if (e.type == SDL_MOUSEWHEEL && mx >= viewW) {
@@ -1924,11 +2304,20 @@ int main(int argc, char** argv) {
                             sim.gameOver() && sim.winner() == playerHouse);
                 if (lost) {
                     ended = End::Lost;
+                    endMs = SDL_GetTicks();
                     mixer.playEva("fail1");
                 } else if (won) {
                     ended = End::Won;
+                    endMs = SDL_GetTicks();
                     mixer.playEva("accom1");
                 }
+            }
+            // Hold the banner briefly so the outcome (and its EVA line) register,
+            // then advance to the post-mission screen — sooner on any key/click.
+            if (ended != End::None &&
+                (advanceEnd || SDL_GetTicks() - endMs > 3500)) {
+                result = ended == End::Won ? Outcome::Won : Outcome::Lost;
+                quit = true;
             }
 
             const Uint8* keys = SDL_GetKeyboardState(nullptr);
@@ -2400,10 +2789,205 @@ int main(int argc, char** argv) {
             }
             SDL_Delay(8);
         }
-        if (frameTex)
-            SDL_DestroyTexture(frameTex);
-        if (frameSurf)
-            SDL_FreeSurface(frameSurf);
+        // The window/renderer/frame surface persist in `shell` (owned by main);
+        // only the per-mission world surface is freed here.
+        SDL_FreeSurface(mapSurf);
+        return result;
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "error: %s\n", e.what());
+        return Outcome::Quit;
+    }
+}
+
+// Faction display label for the campaign side, from the player house.
+static std::string sideLabel(const std::string& house, bool isTd) {
+    if (isTd)
+        return house == "BadGuy" ? "NOD" : "GDI";
+    return house;
+}
+
+int main(int argc, char** argv) {
+    if (argc < 3) {
+        std::fprintf(stderr,
+                     "usage: game <map.ini> <data-root> [--scale N] [--house H] [--no-shroud]\n"
+                     "            [--credits N] [--tech N] [--sim-ticks N] [--dump out.bmp]\n"
+                     "            [--move i,cx,cy]... [--attack i,j]... [--attack-struct i,sid]...\n"
+                     "            [--harvest i,cx,cy]... [--build b|i|v,type]... [--place cx,cy]\n"
+                     "            [--deploy i] [--no-menu]\n"
+                     "  data-root example: data/assets/red_alert/allied\n");
+        return 2;
+    }
+    try {
+        std::string mapPath = argv[1];
+        std::string root = argv[2];
+
+        // Headless (--sim-ticks/--until-win): run the deterministic sim directly,
+        // no window/menu. A silent, uninitialised mixer + empty font/cursor keep
+        // runScenario happy; its SFX calls become no-ops.
+        bool headless = intArg(argc, argv, "--sim-ticks", -1) >= 0 ||
+                        flagArg(argc, argv, "--until-win");
+        game::AudioMixer mixer;
+        std::optional<fmt::FntFile> noFont;
+        std::optional<fmt::ShpD2File> noCursor;
+        if (headless) {
+            Shell shell;
+            shell.mixer = &mixer;
+            shell.hudFont = &noFont;
+            shell.cursor = &noCursor;
+            runScenario(argc, argv, mapPath, shell);
+            return 0;
+        }
+
+        // ---- Interactive session: create the window/resources once ----
+        // Probe the map to learn the game (TD vs RA) so we can resolve the
+        // font/cursor/audio paths (all root-relative, constant across a campaign)
+        // before the first mission loads.
+        bool isTd = game::MapFile::load(mapPath).game == game::Game::TiberianDawn;
+        std::string conquerDir = isTd ? root + "/CONQUER" : root + "/MAIN/conquer";
+        std::string hiresDir = isTd ? root + "/../covert_ops/CONQUER"
+                                    : root + "/INSTALL/REDALERT/hires";
+        std::string fontDir =
+            isTd ? root + "/INSTALL/CCLOCAL" : root + "/INSTALL/REDALERT/local";
+
+        auto loadFont = [](const std::string& p) -> std::optional<fmt::FntFile> {
+            try {
+                return fmt::FntFile::load(p);
+            } catch (const std::exception&) {
+                return std::nullopt;
+            }
+        };
+        std::optional<fmt::FntFile> font6 = loadFont(fontDir + "/6point.fnt");
+        std::optional<fmt::FntFile> font8 = loadFont(fontDir + "/8point.fnt");
+        // 8point is the compact, legible HUD face; 6point (larger) is a fallback.
+        std::optional<fmt::FntFile> hudFont =
+            font8.has_value() ? std::move(font8) : std::move(font6);
+        if (!hudFont)
+            std::printf("note: no HUD font at %s (text disabled)\n", fontDir.c_str());
+
+        mixer.setSoundDir(root + "/SOUNDS");
+        mixer.setMusicDir(root + "/SCORES");
+        mixer.setEvaDir(root + "/../covert_ops/AUD1/SPEECH"); // Covert Ops disc
+
+        if (SDL_Init(SDL_INIT_VIDEO) != 0)
+            throw std::runtime_error(SDL_GetError());
+        SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0"); // nearest — crisp pixels
+        int winW0 = 960, winH0 = 600;
+        SDL_Window* win =
+            SDL_CreateWindow("Command & Conquer — clone", SDL_WINDOWPOS_CENTERED,
+                             SDL_WINDOWPOS_CENTERED, winW0, winH0, SDL_WINDOW_RESIZABLE);
+        if (!win)
+            throw std::runtime_error(SDL_GetError());
+        SDL_Renderer* renderer =
+            SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED);
+        if (!renderer)
+            renderer = SDL_CreateRenderer(win, -1, 0); // software fallback
+        if (!renderer)
+            throw std::runtime_error(SDL_GetError());
+        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255); // black letterbox bars
+
+        if (!mixer.init())
+            std::printf("note: audio unavailable, running silent\n");
+
+        // Contextual mouse cursor art (Dune II-format SHP). Loaded once.
+        std::optional<fmt::ShpD2File> cursor;
+        std::vector<std::string> cursorPaths =
+            isTd ? std::vector<std::string>{fontDir + "/mouse.shp",
+                                            root + "/INSTALL/LOCAL/mouse.shp",
+                                            conquerDir + "/mouse.shp"}
+                 : std::vector<std::string>{hiresDir + "/mouse.shp",
+                                            root + "/INSTALL/REDALERT/lores/mouse.shp"};
+        for (const auto& p : cursorPaths) {
+            try {
+                cursor = fmt::ShpD2File::load(p);
+                break;
+            } catch (const std::exception&) {
+            }
+        }
+        if (!cursor)
+            std::printf("note: no cursor art found, using OS cursor\n");
+
+        Shell shell;
+        shell.win = win;
+        shell.renderer = renderer;
+        shell.mixer = &mixer;
+        shell.hudFont = &hudFont;
+        shell.cursor = &cursor;
+
+        // Campaign: every scenario beside the seed map for the player's side.
+        std::string playerHouse = strArg(argc, argv, "--house")
+                                      ? strArg(argc, argv, "--house")
+                                  : isTd ? "GoodGuy"
+                                         : "Greece";
+        char side = playerHouse == "BadGuy" ? 'b' : 'g';
+        std::vector<Mission> missions = discoverCampaign(mapPath, side);
+        if (missions.empty()) {
+            // Custom/one-off map: make it the whole "campaign".
+            Mission m;
+            m.path = mapPath;
+            m.code = std::filesystem::path(mapPath).stem().string();
+            m.name = toUpper(m.code);
+            m.briefing = "";
+            missions.push_back(std::move(m));
+        }
+        // Where the seed map sits in the list (so "next" continues from it).
+        int seedIdx = 0;
+        {
+            std::string seedStem = toLower(std::filesystem::path(mapPath).stem().string());
+            for (int i = 0; i < int(missions.size()); i++)
+                if (missions[i].code == seedStem) {
+                    seedIdx = i;
+                    break;
+                }
+        }
+        std::string sideName = sideLabel(playerHouse, isTd);
+
+        // ---- Game-state machine ----
+        enum class Screen { Menu, Mission, Post };
+        // --no-menu (or the one-frame --ui-shot verification tool) drops straight
+        // into the seed mission, preserving the old direct-launch behaviour.
+        bool skipMenu =
+            flagArg(argc, argv, "--no-menu") || strArg(argc, argv, "--ui-shot");
+        Screen screen = skipMenu ? Screen::Mission : Screen::Menu;
+        int idx = seedIdx;
+        Outcome last = Outcome::Quit;
+        bool running = true;
+        while (running) {
+            if (screen == Screen::Menu) {
+                int pick = runMainMenu(shell, missions, sideName);
+                if (pick < 0)
+                    break; // quit
+                idx = pick;
+                screen = Screen::Mission;
+            } else if (screen == Screen::Mission) {
+                idx = std::clamp(idx, 0, int(missions.size()) - 1);
+                last = runScenario(argc, argv, missions[idx].path, shell);
+                if (last == Outcome::Quit)
+                    break;
+                screen = last == Outcome::ToMenu ? Screen::Menu : Screen::Post;
+            } else { // Post
+                bool hasNext = last == Outcome::Won && idx + 1 < int(missions.size());
+                switch (runPostMission(shell, last, hasNext, missions[idx])) {
+                case PostChoice::Restart:
+                    screen = Screen::Mission;
+                    break;
+                case PostChoice::Next:
+                    idx++;
+                    screen = Screen::Mission;
+                    break;
+                case PostChoice::Menu:
+                    screen = Screen::Menu;
+                    break;
+                case PostChoice::Quit:
+                    running = false;
+                    break;
+                }
+            }
+        }
+
+        if (shell.frameTex)
+            SDL_DestroyTexture(shell.frameTex);
+        if (shell.frameSurf)
+            SDL_FreeSurface(shell.frameSurf);
         SDL_DestroyRenderer(renderer);
         SDL_DestroyWindow(win);
         SDL_Quit();

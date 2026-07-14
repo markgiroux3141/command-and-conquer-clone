@@ -1,119 +1,129 @@
-# Handoff — session 12 → Phase 7 polish / Phase 8 (written 2026-07-14)
+# Handoff — session 13 → Track B (Phase 7 polish) (written 2026-07-14)
 
-Session 12 landed **all of Phase 7 (AI & missions)**: win/lose conditions, a
-deterministic skirmish AI (base-building + attack waves), and mission scripting
-(triggers/teamtypes/waypoints), with TD **GDI mission 1** as the worked example.
-The engine is now an actual game: an enemy that builds and attacks, scripted
-reinforcements/waves, and a win/lose outcome. See the Phase 7 block + session-12
-log in `MILESTONES.md` for the full detail.
+Session 13 landed **Track A (Phase 8 game flow)**: a main menu + post-mission
+screen wrapping the shell in a game-state machine, so the game no longer freezes
+on the MISSION ACCOMPLISHED/FAILED banner. See the Phase 8 block + session-13 log
+in `MILESTONES.md` for the full detail.
 
 ## Read first
 
-1. `MILESTONES.md` — Phase 7 is now ticked; the session-12 log entry is the delta
-   and lists the exact next-task candidates.
-2. `docs/original-source/06-houses-ai-missions.md` — still the key reference
-   (HouseClass AI, Mission_* state machine, triggers/teamtypes, reinforcements,
-   superweapons). The clone implements a *simplified* subset of this.
+1. `MILESTONES.md` — Phase 8 "Main menu + game flow" is now ticked; session-13
+   log is the delta.
+2. `docs/original-source/06-houses-ai-missions.md` — the reference for Track B
+   (reinforcements/`Do_Reinforcements` §7, TeamTypes/Teams §4, triggers §4,
+   AI base-building §6).
 3. `README.md` / `play.bat` — how to run.
 
 ## Current state (what compiles / plays)
 
-- Builds clean: `cmake --build build --config Release`. Sim is headless and
-  **deterministic** — verified again this session (AI + triggers byte-identical
-  across runs). Don't break that (see Gotchas).
-- **Win/lose**: `Sim` latches a house defeated at zero assets, `winner()`/
-  `gameOver()`/`missionResult()` resolve the outcome; interactive shell shows a
-  MISSION ACCOMPLISHED/FAILED banner + EVA and freezes orders.
-- **Skirmish AI** (`Sim::setAI`/`tickAI`): deploys the MCV, builds the tech
-  chain (power→refinery→barracks→factory), trains rifles + harvesters + tanks,
-  and throws attack waves at the nearest enemy. On by default for enemy houses.
-  Refineries grant a free harvester so the economy sustains (if ore is reachable).
-- **Mission scripting**: `[Triggers]`/`[TeamTypes]`/`[Waypoints]` parse into
-  `MapFile`; the sim's trigger evaluator handles Time / All Destr. / Bldgs Destr.
-  → Win / Lose / Reinforce / Create Team / Production on the ~6s cadence.
-- **Playtested**: GDI mission 1 plays and is winnable (MISSION ACCOMPLISHED
-  confirmed). Camera now confines to the playable bounds (out-of-bounds cells
-  marked impassable) so units/reinforcements can't wander off the scrollable map.
+- Builds clean: `cmake --build build --config Release --target game_exe`
+  (the exe is `game.exe`; `game` is the static lib). Headless sim is unchanged
+  and **deterministic** (verified byte-identical this session).
+- **Game flow** (all in `src/game_main.cpp`): `main()` is now a state machine —
+  **Menu → Mission → Post**. The interactive SDL window/renderer/mixer/fonts/
+  cursor are created **once** in `main()` and shared via the new `Shell` struct.
+  - `runScenario(argc, argv, mapPath, shell) -> Outcome` — the former `main()`
+    body (setup + headless block + interactive loop), verbatim except it uses
+    `shell`'s shared resources and returns `Outcome{Won,Lost,Quit,ToMenu}`.
+    Headless (`--sim-ticks`/`--until-win`) branches and returns inside it as
+    before.
+  - `runMainMenu(shell, missions, sideName) -> int` — scrollable mission list
+    (= mission select), a briefing panel (from `GENERAL/mission.ini`), NEW GAME
+    (returns 0) + QUIT (returns -1).
+  - `runPostMission(shell, outcome, hasNext, mission) -> PostChoice` — NEXT /
+    RESTART / RETURN TO MENU (NEXT only when won and a next mission exists).
+  - `MenuCanvas` — fixed-logical-res, letterbox-scaled present used by both menu
+    screens (mirrors the in-mission present pipeline; keeps text legible).
+  - `discoverCampaign(seedIni, side)` — finds `sc<g|b><NN>…ini` beside the seed
+    map, sorted; `side` from `--house` (GoodGuy→'g', BadGuy→'b'). Empty → the
+    seed map becomes a one-mission "campaign".
+- **In-mission**: Esc → return to menu; the win/lose banner holds ~3.5s (or any
+  key/click) then advances to the post screen (via `Outcome::Won/Lost`).
+- `--no-menu` and `--ui-shot` skip the menu and drop into the seed mission
+  (preserves the old direct-launch + all headless/`--ui-shot` verification).
 
-## Where the Phase-7 code lives
+## Where the game-flow code lives
 
-- `src/game/sim.{h,cpp}` — all the sim-side work:
-  - Win/lose: `combatants_`/`defeated_`, `evaluateDefeat()`, `winner()`.
-  - AI: `aiHouses_`, `tickAI()`, `aiFindBuildSpot()`, `footprint_`/`setFootprint`,
-    `grantHarvester()`, attack cooldown `aiAttackCd_`.
-  - Scripting: `TriggerDef`/`TeamTypeDef`/`MissionResult`, `triggers_`,
-    `teamTypes_`, `waypoints_`, `tickTriggers()`/`runTriggerAction()`/
-    `spawnTeam()`. `tick()` calls AI + triggers up top (deterministic, keyed off
-    `tickCount_`).
-- `src/game/map.{h,cpp}` — `parseScripting()` fills `MapFile::triggers/
-  teamTypes/waypoints` (called from both RA `load` and TD `loadTd`).
-- `src/game_main.cpp` — the shell bridges map→sim: registers building footprints
-  (from the art), enables AI on enemy houses (`--no-ai`/`--ai`/`--ai-credits`),
-  translates the scripting sections, reconciles AI-placed structures into the
-  draw list (top of `buildDrawList`), latches the win/lose banner, and honors
-  `--until-win` headless.
+All in `src/game_main.cpp`:
+- New front-end block sits just before `} // namespace` (~line 405):
+  `Outcome`/`Shell`/`Mission` types, `MenuCanvas`, `menuButton`,
+  `discoverCampaign`/`briefingFor`/`wrapText`, `runMainMenu`, `runPostMission`.
+- `runScenario` = the old `main()` body (starts ~line 415). Key edits vs. before:
+  binds `mixer`/`hudFont` from `shell` at the top; interactive branch uses
+  `shell.win/renderer/cursor` and `shell.frameSurf/frameTex/resIndex/fullscreen`
+  (references) instead of creating them; frees only the per-mission `mapSurf` at
+  the end; returns `result`.
+- The new `main()` (bottom of the file): usage, headless shortcut, one-time SDL/
+  window/renderer/mixer/font/cursor setup, campaign discovery, the state machine,
+  teardown.
 
-## Suggested next work (Phase 7 polish, then Phase 8)
+## Suggested next work (Track B — Phase 7 polish)
 
-1. **Coordinated TeamType missions.** Right now spawned team members just get
-   folded into the AI's generic attack wave. The originals script per-team
-   `Move:wpt`/`Attack`/`Guard` sequences (TEAM.CPP `Coordinate_*`). Retain the
-   TeamType mission list (parsed-past today) and drive spawned teams along it.
-2. **Real reinforcement entry.** Teams spawn near the house's base; the original
-   enters from the map edge / a waypoint, and `LST:` is a naval landing (skipped
-   today). Use `[Waypoints]` + map-edge pathing; add naval/air later.
-3. **More trigger coverage.** Superweapons (Ion/Nuke/Airstrike), `Built It`,
-   `Discovered`, `Credits`, cell triggers, trigger-destroys-trigger chaining.
-4. **AI depth.** Defensive-structure building (gun/gtwr/obli/sam), difficulty
-   (attack cadence + stipend), rebuild-destroyed-buildings, per-map `[Base]`
-   prebuilt list (INI.CPP:441 / BASE.CPP).
-5. **Phase 8**: main menu, in-game options, save/load; more EVA cues.
+Priority order from the user:
+1. **Reinforcements at the map edge/shore via waypoints** (LST naval landing is
+   currently skipped; teams spawn mid-base). `Do_Reinforcements` REINF.CPP:63 —
+   enter from a waypoint / map edge and drive on. First pass: spawn at the
+   reinforcement waypoint + move onto the map.
+2. **Coordinated TeamType missions** (Move:wpt / Attack / Guard) instead of
+   folding spawned units into the generic AI wave. Retain the TeamType mission
+   list (parsed-past today; see `map.h` note) and drive teams along it
+   (TEAM.CPP `Coordinate_*`).
+3. **Broaden trigger coverage**: superweapons (Ion/Nuke/Airstrike), `Built It`,
+   `Discovered`, `Credits`, cell triggers, trigger-chaining.
+4. **AI depth**: defensive structures (gun/gtwr/obli/sam), difficulty tiers,
+   building rebuild, per-map `[Base]` prebuilt list (INI.CPP:441 / BASE.CPP).
+
+Later Phase 8: in-game OPTIONS menu (the tab is a stub), save/load; more EVA cues.
 
 ## Verification recipe
 
 ```
-cmake --build build --config Release
+cmake --build build --config Release --target game_exe
 
-# Win/lose + AI + triggers, headless (deterministic; enable AI with --ai):
+# Determinism (must stay byte-identical):
 build\Release\game.exe data\assets\tiberian_dawn\gdi\GENERAL\scg01ea.ini ^
-  data\assets\tiberian_dawn\gdi --house GoodGuy --no-shroud --until-win --ai
-#   Reinforcement check: --sim-ticks 300 --ai then count "after: unit .*GoodGuy"
-#   (6 at t0 -> 9 at t300 -> 12 at t600 as GDI reinforcements arrive).
-#   Base-build check: --house BadGuy (GoodGuy becomes AI, has the MCV) --sim-ticks 4000 --ai
+  data\assets\tiberian_dawn\gdi --house GoodGuy --no-shroud --sim-ticks 600 --ai
+#   run twice, sha1sum the stdout -> identical.
 
-# HUD screenshot (one frame): --ui-shot out.bmp  (then PIL-convert + Read the PNG)
+# Interactive game flow: just launch (menu comes up first).
+build\Release\game.exe data\assets\tiberian_dawn\gdi\GENERAL\scg01ea.ini ^
+  data\assets\tiberian_dawn\gdi --house GoodGuy
+#   Menu -> click a mission (or NEW GAME) -> play -> win/lose banner -> Post
+#   screen -> Restart / Next / Menu. Esc mid-mission returns to the menu.
 
-# For sim-level checks that need a controlled setup (win-latch, trigger actions,
-# AI-vs-AI to a winner) this session used throwaway exe targets wired into
-# CMakeLists (added, built, run, then removed). Re-add the same way if needed —
-# link `game SDL2::SDL2 SDL2::SDL2main`, use Sim + Rules::load("td_rules.ini"),
-# setFootprint/setOre/addUnit/setAI directly. All were deterministic.
+# One-frame mission screenshot (skips the menu): --ui-shot out.bmp
 ```
+
+Menu/post screens have no headless trigger. This session verified them with
+**throwaway env-gated screenshot hooks** (`CNC_MENU_SHOT` / `CNC_POST_SHOT` that
+saved one `MenuCanvas` frame to BMP) — both rendered correctly, then the hooks
+were removed. Re-add the same way (a `save()` on `MenuCanvas` + an env check
+after `present()`) if you need to eyeball a menu change.
 
 ## Gotchas / constraints
 
-- **Determinism is sacred.** AI + triggers are keyed off `tickCount_` only — no
-  wall-clock, no unseeded RNG in `tick()`. The AI is fully deterministic (no RNG
-  yet); if you add difficulty jitter, seed it and advance in tick order.
-- AI think cadence = every 15 ticks (staggered per house). Trigger cadence =
-  every 90 ticks (`TICKS_PER_MINUTE/10`) starting at tick 90; a Time trigger
-  with `Data=N` fires after `N*90` ticks.
-- **Footprints** for AI placement come from the art via `Sim::setFootprint`
-  (shell registers `fact` + all struct types). A type with no footprint won't be
-  built by the AI.
-- House names: `GoodGuy`=GDI, `BadGuy`=Nod, `Neutral`=civilian (excluded from
-  combatants). AI is off for `playerHouse_`.
-- Economy needs reachable ore. scg01ea's GDI landing beach has none nearby, so
-  an AI there builds a base but stalls at 0 credits — that's the map, not a bug.
-  Synthetic tests with an ore patch confirm the full harvest→credits→army loop.
+- **Determinism is sacred.** The headless sim (`Sim::tick`) is untouched; the
+  game-flow work is all front-end. Keep it that way — re-verify byte-identical
+  runs after any sim change.
+- **Never commit game assets** (`data/`, `renders/` are gitignored).
+- The exe target is `game_exe` (OUTPUT_NAME `game`); `game` alone builds the lib.
+- `runScenario` still reads per-mission options from `argc/argv` (`--house`,
+  `--credits`, `--tech`, `--no-shroud`, `--no-ai`, `--ai-credits`, `--rules`,
+  `--scale`), so they apply to every mission in a campaign run.
+- Campaign "next mission" just advances the sorted index — it steps through
+  branch variants (scg04ea/wa/wb) linearly. Fine for now; real branching is a
+  later concern.
+- scg01ea AI-vs-AI (`--until-win` with the player as AI) prints "no winner": the
+  GDI beach has no reachable ore so the AI stalls at 0 credits — the map, not a
+  bug (documented since session 12).
 
 ## Git / housekeeping
 
-- **Session-12 Phase 7 work is committed & pushed to `main`** (win/lose, AI,
-  mission scripting, bounds-confine camera fix). Working tree clean at handoff.
-- Temp test files (wintest/aitest/scripttest) were removed; `CMakeLists.txt` is
-  back to its original targets.
-- **Never commit game assets** (`data/`, `renders/` are gitignored).
+- **Session-13 Track A work is committed & pushed to `main`** (game-flow state
+  machine in `game_main.cpp`, MILESTONES/HANDOFF updates).
+- `docs/REFACTOR_PLAN.md` is untracked (predates this session) — left for the
+  user to commit if wanted; it documents a *future* decomposition pass and is
+  unrelated to this work.
 - Commit trailer in use: `Co-Authored-By: Claude ...`.
 
 ## Context handoff protocol
