@@ -441,6 +441,14 @@ carries the delta. Update this file's checkboxes *before* writing a handoff.
   deterministic (scg01ea 35/50 @ tick 197). Verified via `--ui-shot`: power bar,
   wider sidebar, radar shroud dimming all correct. Sell/repair click-flow is
   verified-by-construction (no headless trigger — needs an interactive test).
+  Then composited **real DOS HUD art** (user request): the radar box shows the
+  faction **medallion** (GDI eagle / Nod viper, `radar.gdi`/`radar.nod` frame 0)
+  until the house owns a Comm Center (`hq`/`eye`), then switches to the live
+  minimap; empty cameo slots use the original `strip.shp` metallic texture (2x);
+  sidebar **scroll arrows** (`stripup`/`stripdn`) appear on overflow and scroll a
+  row per click. Verified via `--ui-shot` (eagle medallion + strip slots render
+  crisply). Remaining UI: OPTIONS menu, MAP button behaviour, custom cursor
+  (TD `mouse.shp` isn't ShpD2), real tab/power-bar art.
 - **2026-07-08 (session 5): Phase 6 complete.** Production stats in rules
   (Cost/TechLevel/Owner/Prerequisite/BuildSpeed/land Buildable=), sim
   production slots with drip payment + power scaling, prereq tree,

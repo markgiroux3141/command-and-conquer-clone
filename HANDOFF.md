@@ -1,105 +1,90 @@
-# Handoff — session 8 → session 9 (written 2026-07-13)
+# Handoff — session 9 → session 10 (written 2026-07-14)
 
-Session 8 delivered the **HUD fidelity** goal: an FNT font decoder plus a
-full 1995-style HUD (metallic sidebar, radar minimap, tab bar, all text).
-The Tiberian Dawn build now *looks* like the original. Sim is unchanged.
+Session 9 turned the static HUD into a working, authentic one: fullscreen +
+dynamic layout, a power bar, radar (shroud + faction medallion), functional
+Sell/Repair, and real DOS sidebar art (medallion, strip slots, scroll arrows).
 
 ## Read first
 
-1. `MILESTONES.md` — Phase 1 (FNT now ticked), Phase 6 (HUD-chrome note), and
-   the session-8 log entry (top of the log).
+1. `MILESTONES.md` — session-9 log entry (top of the log) + Phase 6/8 notes.
 2. `README.md` / `play.bat` — how to run.
 3. Source, only as needed:
-   - `src/formats/fnt.{h,cpp}` — the font decoder (new this session).
-   - `src/game/render.{h,cpp}` — `drawText`/`textWidth` (new); Canvas/blit.
-   - `src/game_main.cpp` — the shell. HUD lives in the render loop: sidebar
-     chrome + radar + buttons + cameo strips, then the top tab bar; plus the
-     placement label and selected-unit health %. Layout constants near the top
-     (`kTopBar`/`kRadarH`/`kBtnH`/`kSideTop`) — change these and `entryPos`,
-     `sidebarHit`, and the scroll clamp all follow.
+   - `src/game_main.cpp` — the shell. The whole HUD is in the interactive render
+     loop: layout is re-derived each frame from the live window size (top of the
+     `while (!quit)` loop), then sidebar chrome (radar/medallion, power bar,
+     buttons, strip slots, cameos, scroll arrows) and the top tab bar. Input for
+     buttons/arrows/sell/repair is in the `SDL_MOUSEBUTTONDOWN LEFT` handler.
+   - `src/game/sim.{h,cpp}` — new `structureAt` / `sellStructure` / `toggleRepair`
+     + a repair pass in `tick()`.
+   - `src/formats/fnt.{h,cpp}` + `render.{h,cpp}` (`drawText`, `blitIndexedScaled`).
 
 ## Current state (what compiles / plays)
 
-- Builds clean: `cmake --build build --config Release` (MSVC, no warnings).
-  `play.bat` runs GDI mission 1. Sim headless is unchanged/deterministic
-  (scg01ea regression still: Nod e1 50→35, dies tick 197).
-- **FNT decoder** works end-to-end: Westwood new-format fonts (FontDataBlocks
-  5), 4-bit packed glyphs, per-char width/height(top-blank + data rows)/offset
-  tables. `game::drawText(canvas, font, text, x, y, argb, spacing)` treats any
-  non-transparent glyph pixel as the caller's color (game fonts are ~1-bit);
-  `textWidth` mirrors it. Fonts load from `<root>/INSTALL/CCLOCAL/` (TD):
-  `6point.fnt` (labels) + `8point.fnt` (credits). Optional — missing fonts just
-  disable text, so headless/other-disc runs are unaffected.
-- **HUD** (all verified via `--ui-shot` on scb03ea GoodGuy):
-  - Top tab bar: `OPTIONS` button, `PWR <produced>/<drained>` (red when short),
-    `$<credits>` (green, 8point), `SIDEBAR` tab.
-  - Sidebar: beveled metallic panel (`bevelPanel` helper — raised/sunken),
-    recessed 1px bezel per cameo, green `$<cost>` label bottom-right of each
-    cameo, unaffordable cameos still darkened, building progress bar + ready
-    border unchanged.
-  - Radar/logo box: a **live minimap** — the baked world surface (`mc`, the
-    Canvas over `mapSurf`) downscaled into the box, with 2px house-colored blips
-    (friendly green / enemy red / neutral gray) and a faction-tinted frame
-    (GDI gold `0xffd8b040`, Nod red `0xffd83030`).
-  - REPAIR | SELL | MAP button row — **visual only** (no sell/repair sim yet).
-  - Placement mode: `<NAME> $<cost>` label follows the cursor.
-  - Selected units/structures: color-coded health `%` above the health bar.
+- Builds clean (no warnings). Sim headless deterministic (scg01ea: Nod e1
+  50→35, dies tick 197). `play.bat` runs GDI mission 1.
+- **Display**: window is resizable; **F11 / Alt+Enter** toggle borderless
+  fullscreen. Layout re-derives from the live window size each frame — a bigger
+  window shows *more map*, the sidebar snaps to the right, camera clamps are
+  guarded for window>map, and the tactical area is cleared black when larger
+  than the map. **Screen-edge scroll** fires only inside the tactical viewport.
+- **Sidebar** (all verified via `--ui-shot`):
+  - Radar box: the faction **medallion** (GDI eagle / Nod viper — real
+    `radar.gdi`/`radar.nod` art) until the house owns a Comm Center (`hq`/`eye`),
+    then the live **minimap** (respects shroud: unexplored black, blips hidden).
+  - **Vertical power bar** in the left gutter: green fill = output, yellow tick
+    = demand, red on deficit.
+  - **REPAIR | SELL | MAP** buttons: REPAIR/SELL toggle a click-mode (button
+    highlights); then left-click one of your structures to repair (heals + drains
+    credits over ticks) or sell (refunds half cost, removes it). ESC cancels.
+    **MAP is still a stub.**
+  - Cameo slots use the real `strip.shp` metallic texture; cameos (32×24 art)
+    are 2×-scaled to fill, with green `$cost` labels. **Scroll arrows**
+    (`stripup`/`stripdn`) appear at the bottom-right on overflow; click = 1 row.
+  - Top tab bar: `OPTIONS | PWR n/n | $credits | SIDEBAR`.
 - Still a sandbox: no win/lose, no AI/base-building, no mission triggers.
 
 ## Next tasks (suggested order)
 
-1. **Wire the sidebar buttons** to sim: SELL (refund a structure, remove it),
-   REPAIR (drip-heal a structure for credits), MAP (toggle a larger radar /
-   jump-scroll). SELL/REPAIR need small `Sim` methods; MAP is pure UI.
-2. **Win/lose + a beatable mission** (Phase 7): destroy-all-structures win /
-   lose-when-you-have-none; then mission INI `[Triggers]`/`[TeamTypes]`, with a
-   minimal skirmish AI (build order + attack waves).
-3. **Polish**: radar shroud (dim unexplored cells in the minimap), cameo
-   name/tooltip, TD tiberium density frames + real harvest density, muzzle-flash
-   anims, sound pan by on-screen distance, more EVA cues.
+1. **Finish UI wiring**: OPTIONS menu (pause/quit/volume), MAP button (jump/
+   enlarge radar), a custom mouse cursor (TD `mouse.shp` isn't ShpD2 — either
+   port a cursor SHP or draw one), sell/repair cursor hints. Optionally swap the
+   hand-drawn tab bar / power-bar for `tabs.shp` / `power.shp` art.
+2. **Win/lose + a beatable mission** (Phase 7) + a minimal skirmish AI.
+3. **Polish**: TD tiberium density frames, muzzle-flash anims, sound pan.
 
-## Gotchas discovered this session (not all in code comments)
+## Gotchas discovered this session (not in code comments)
 
-- **FNT header** (little-endian): u16 fileLen; u8 compress(0); u8 dataBlocks(5);
-  then u16 offsets at 4/6/8/10/12 = info/offset/width/data/height blocks.
-  `maxHeight/maxWidth` = infoBlock[4]/[5]. **Char count = (widthBlockOff −
-  offsetBlockOff)/2** (offset table is u16/char). Per char: offset table entry
-  is an *absolute* file offset to the pixel data; width table is u8; height
-  table is 2 bytes/char = {topBlank, dataRows}. Pixels are two-per-byte, **low
-  nibble first**, `ceil(width/2)` bytes per row, `dataRows` rows. Value 0 =
-  transparent, 1 = foreground (recolored), 2-15 = literal palette index (rare;
-  our `drawText` treats all nonzero as the one caller color — fine for HUD).
-- `6point.fnt` reports maxHeight/maxWidth 16 (generous cell), but real glyph
-  data rows are ~7px — don't be alarmed; we only use per-glyph `yOffset`/`height`
-  and `maxWidth` (fallback advance for missing glyphs), not maxHeight for layout.
-- The minimap reuses `mc` (the persistent `Canvas` wrapping `mapSurf` from the
-  bake step) — it stays valid the whole run because `mapSurf->pixels` is stable.
-- Sim entities have **no `alive` flag**; dead ones are removed from the vectors.
-  Blips guard on `hp > 0` anyway (harmless). `Unit::cell()` is a method;
-  `Structure::cell` is a field (top-left) — watch the `()`.
-- Cameos now start at `kSideTop` (below radar+buttons), not y=4. Any new sidebar
-  hit-testing must use `kSideTop`, and the scroll clamp is
-  `kSideTop + rows*(kCameoH+4) + 4 − winH`.
-- **TD cameo `<type>icon.shp` art is 32×24** (not 64×48 like RA hires) — drawn
-  with `blitIndexedScaled` to fill the 64×48 slot (2×). Don't `blitIndexed` them
-  raw or they fill only the top-left quarter. Empty slots draw as recessed
-  bezels so the sparse mission-start sidebar still looks framed.
-- **Font naming is counter-intuitive**: `8point.fnt` maxHeight is 11 and
-  `6point.fnt` is 16 — 8point is the *smaller* one and is the HUD default
-  (`hudFont`). All chrome text is laid out from measured `textWidth` (spacing 0)
-  so labels/buttons fit; don't hardcode box widths or you'll clip edge glyphs.
+- **`radar.gdi`/`radar.nod`** are 80×69 SHPs with **43 frames** (a power-up
+  animation). Frame 0 is the faction medallion (radar-off state); the last
+  frames go black (radar-on hole). Load by full path (`.gdi`/`.nod` extension —
+  `ArtCache::shp` won't find them). They live in `covert_ops/CONQUER` = the TD
+  `hiresDir`.
+- **Radar building** = `hq` (Comm Center) or `eye` (Adv. Comm) per TD
+  `HOUSE.CPP` `STRUCTF_RADAR|STRUCTF_EYE`. That's the logo↔minimap gate.
+- **Layout is dynamic now**: `viewW`/`winW`/`winH` are *reassigned* each frame
+  (the lambdas `entryPos`/`sidebarHit` capture them by ref — don't redeclare
+  them inside the loop). `sideBot`, `btnRect[]`, `arrowUp/Dn` are recomputed at
+  the loop top so the input handler and renderer agree.
+- **Fullscreen path (window>map) isn't exercised by `--ui-shot`** (it uses the
+  default window size). The black-clear + clamp guards cover it, but eyeball
+  fullscreen once interactively.
+- **Sell/Repair click-flow is verified-by-construction** — the sim methods are
+  simple and mirror `killStructure`/credit code, but there's no headless
+  trigger. Drive it interactively: SELL a powr (credits jump ~½ cost, building
+  vanishes); damage a building then REPAIR (health climbs, credits tick down).
+- `sellStructure` calls `killStructure`, which pushes a `StructDied` event — but
+  it's called during input handling, so the next `tick()` clears it before
+  `processEvents` sees it (no explosion for a sold building; fine).
 
 ## Verification recipe
 
 ```
-# HUD screenshot (populated GDI base → full sidebar):
+# HUD screenshot (GDI base, no Comm Center → eagle medallion + strip slots):
 build\Release\game.exe data\assets\tiberian_dawn\nod\GENERAL\scb03ea.ini ^
   data\assets\tiberian_dawn\nod --house GoodGuy --no-shroud --ui-shot out.bmp
-# Then: python -c "from PIL import Image; Image.open('out.bmp').save('out.png')"
-# Expect: OPTIONS/PWR/$credits/SIDEBAR tab bar, beveled sidebar, gold-framed
-# radar minimap with green/red blips, REPAIR|SELL|MAP row, green $cost labels.
-# Placement label + health % need an interactive session (click a cameo / units)
-# — they share the same drawText path, so a screenshot of either confirms both.
+# python -c "from PIL import Image; Image.open('out.bmp').save('out.png')"
+# Interactive checks (no headless path): F11 fullscreen, screen-edge scroll,
+# SELL/REPAIR a structure, scroll arrows on a base with >8 buildable rows.
 ```
 
 ## Context handoff protocol
