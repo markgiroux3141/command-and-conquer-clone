@@ -164,6 +164,17 @@ struct Anim {
     int frame = 0;
 };
 
+// A building's <type>make.shp "buildup" playing over its footprint (top-left
+// world pixels). When it finishes, the real structure drawable is added.
+struct Buildup {
+    const fmt::ShpFile* shp = nullptr;
+    int x = 0, y = 0;
+    int frame = 0;
+    const game::RemapTable* remap = nullptr;
+    std::string type, house;
+    int cell = 0, sid = 0;
+};
+
 // Combat_Anim (COMBAT.CPP): warhead ExplosionSet + damage -> effect art.
 std::string combatAnimName(int damage, const game::WarheadStats* wh, bool water) {
     static const char* kAp[] = {"veh-hit3", "veh-hit2", "frag1", "fball1"};
@@ -601,6 +612,29 @@ int main(int argc, char** argv) {
                 structures.push_back(o2);
             }
         };
+        // Buildups in progress (the <type>make.shp animation). While one plays
+        // the structure has no drawable yet; when it finishes we add the real
+        // one. Used only on interactive player placement (headless is instant).
+        std::vector<Buildup> buildups;
+        auto startBuildup = [&](const std::string& type, const std::string& house,
+                                int cell, int sid) {
+            const fmt::ShpFile* mk = art.shp(type + "make");
+            if (!mk || mk->frames.empty()) {
+                addStructDrawable(type, house, cell, sid); // no buildup art
+                return;
+            }
+            Buildup b;
+            b.shp = mk;
+            b.x = (cell % kSize - cx0) * kTile;
+            b.y = (cell / kSize - cy0) * kTile;
+            b.remap = remapFor(house);
+            b.type = type;
+            b.house = house;
+            b.cell = cell;
+            b.sid = sid;
+            buildups.push_back(b);
+            mixer.playSound("constru2"); // placement rumble
+        };
         for (const auto& s : map.structures) {
             int w = 0, h = 0;
             if (!structFootprint(s.type, w, h)) {
@@ -747,6 +781,17 @@ int main(int argc, char** argv) {
                                            return a.frame >= int(a.shp->frames.size());
                                        }),
                         anims.end());
+            // Advance buildups; a finished one becomes a real structure drawable.
+            for (auto& b : buildups)
+                b.frame++;
+            for (auto& b : buildups)
+                if (b.frame >= int(b.shp->frames.size()))
+                    addStructDrawable(b.type, b.house, b.cell, b.sid);
+            buildups.erase(std::remove_if(buildups.begin(), buildups.end(),
+                                          [](const Buildup& b) {
+                                              return b.frame >= int(b.shp->frames.size());
+                                          }),
+                           buildups.end());
             for (const auto& ev : sim.events()) {
                 // Sound (no-op unless the interactive mixer is open).
                 switch (ev.type) {
@@ -1224,7 +1269,7 @@ int main(int argc, char** argv) {
                         int cell = cellY * kSize + cellX;
                         int sid = sim.placeBuilding(playerHouse, cell, placeW, placeH);
                         if (sid >= 0) {
-                            addStructDrawable(placingType, playerHouse, cell, sid);
+                            startBuildup(placingType, playerHouse, cell, sid);
                             placingType.clear();
                         }
                     } else {
@@ -1327,8 +1372,8 @@ int main(int argc, char** argv) {
                                     if (structFootprint("fact", fw, fh)) {
                                         int sid = sim.deployMcv(u->id, fw, fh);
                                         if (sid >= 0)
-                                            addStructDrawable("fact", playerHouse,
-                                                              mcvCell - 1 - kSize, sid);
+                                            startBuildup("fact", playerHouse,
+                                                         mcvCell - 1 - kSize, sid);
                                         else
                                             mixer.playEva("deploy1"); // can't deploy here
                                     }
@@ -1457,6 +1502,17 @@ int main(int argc, char** argv) {
                         game::drawText(wc, *hudFont, s, tx + 1, ty + 1, 0xff000000);
                         game::drawText(wc, *hudFont, s, tx, ty, hc);
                     }
+            // Buildup animations (a building rising up before it goes live).
+            for (const auto& b : buildups) {
+                if (b.frame >= int(b.shp->frames.size()))
+                    continue;
+                game::BlitOptions opts;
+                opts.colorKey = true;
+                opts.shadow = true;
+                opts.remap = b.remap;
+                blitIndexed(wc, b.shp->frames[b.frame].data(), b.shp->width,
+                            b.shp->height, b.x - int(camX), b.y - int(camY), pal, opts);
+            }
             drawEffects(wc, int(camX), int(camY));
             drawShroud(wc, int(camX), int(camY));
 

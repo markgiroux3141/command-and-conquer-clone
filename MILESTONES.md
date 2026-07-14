@@ -447,8 +447,15 @@ carries the delta. Update this file's checkboxes *before* writing a handoff.
   minimap; empty cameo slots use the original `strip.shp` metallic texture (2x);
   sidebar **scroll arrows** (`stripup`/`stripdn`) appear on overflow and scroll a
   row per click. Verified via `--ui-shot` (eagle medallion + strip slots render
-  crisply). Remaining UI: OPTIONS menu, MAP button behaviour, custom cursor
-  (TD `mouse.shp` isn't ShpD2), real tab/power-bar art.
+  crisply). Then added **building buildup animations**: placing a structure (or
+  deploying the MCV) plays its 20-frame `<type>make.shp` "rising" animation
+  (~1.3 s) + a `constru2` placement sound, then swaps to the real structure
+  (instead of popping in). Implemented as a transient `Buildup` overlay — the
+  sim structure exists immediately; only its drawable is deferred until the
+  animation finishes (interactive placement only; headless stays instant).
+  Verified the make.shp art decodes (nukemake frames 3/10/19). Remaining UI:
+  OPTIONS menu, MAP button behaviour, custom cursor (TD `mouse.shp` isn't ShpD2),
+  real tab/power-bar art.
 - **2026-07-08 (session 5): Phase 6 complete.** Production stats in rules
   (Cost/TechLevel/Owner/Prerequisite/BuildSpeed/land Buildable=), sim
   production slots with drip payment + power scaling, prereq tree,
