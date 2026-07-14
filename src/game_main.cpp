@@ -407,6 +407,17 @@ int main(int argc, char** argv) {
         if (!flagArg(argc, argv, "--no-shroud"))
             sim.setPlayerHouse(playerHouse);
 
+        // Faction radar medallion (the GDI eagle / Nod viper) — real DOS art,
+        // shown in the radar box until the house owns a Communications Center.
+        std::optional<fmt::ShpFile> radarLogo;
+        if (isTd) {
+            try {
+                radarLogo = fmt::ShpFile::load(
+                    hiresDir + "/radar." + (playerHouse == "BadGuy" ? "nod" : "gdi"));
+            } catch (const std::exception&) {
+            }
+        }
+
         // Bakes one cell's base terrain into the world surface (also used to
         // redraw a cell after its ore is harvested away).
         auto bakeTerrainCell = [&](int mapX, int mapY) {
@@ -1050,6 +1061,7 @@ int main(int argc, char** argv) {
         // Sidebar action mode: click a friendly structure to sell/repair it.
         enum class SideMode { None, Repair, Sell } sideMode = SideMode::None;
         SDL_Rect btnRect[3] = {}; // REPAIR / SELL / MAP hitboxes (recomputed/frame)
+        SDL_Rect arrowUp{}, arrowDn{}; // sidebar scroll arrows (recomputed/frame)
         // Cameos actually on the sidebar: the candidates whose prerequisites are
         // met right now (rebuilt each frame, like the original's StripClass).
         // Pointers into the stable buildStructs/buildUnits candidate lists.
@@ -1101,6 +1113,10 @@ int main(int argc, char** argv) {
                     bx += bw[b] + gap;
                 }
             }
+            // Sidebar scroll arrows sit in a strip at the bottom-right.
+            int sideBot = winH - 26; // cameo columns stop above the arrow strip
+            arrowUp = SDL_Rect{viewW + kSidebarW - 4 - 64, sideBot + 1, 32, 24};
+            arrowDn = SDL_Rect{viewW + kSidebarW - 4 - 32, sideBot + 1, 32, 24};
             // Advance the jukebox when the current track ends.
             if (mixer.enabled() && !mixer.musicPlaying())
                 mixer.playMusic(kScores[musicIdx++ % (int(sizeof(kScores) / sizeof(kScores[0])))]);
@@ -1139,13 +1155,11 @@ int main(int argc, char** argv) {
                     SDL_SetWindowFullscreen(
                         win, fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
                 }
-                if (e.type == SDL_MOUSEWHEEL && mx >= viewW) {
-                    int rows = int(std::max(visStructs.size(), visUnits.size()));
-                    int maxScroll =
-                        std::max(0, kSideTop + rows * (kCameoH + 4) + 4 - winH);
+                int rows = int(std::max(visStructs.size(), visUnits.size()));
+                int maxScroll = std::max(0, kSideTop + rows * (kCameoH + 4) + 4 - sideBot);
+                if (e.type == SDL_MOUSEWHEEL && mx >= viewW)
                     sideScroll = std::clamp(sideScroll - e.wheel.y * (kCameoH + 4),
                                             0, maxScroll);
-                }
                 if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
                     // REPAIR / SELL / MAP buttons take priority over everything.
                     int hitBtn = -1;
@@ -1155,6 +1169,10 @@ int main(int argc, char** argv) {
                             e.button.y >= r.y && e.button.y < r.y + r.h)
                             hitBtn = b;
                     }
+                    auto inRect = [&](const SDL_Rect& r) {
+                        return e.button.x >= r.x && e.button.x < r.x + r.w &&
+                               e.button.y >= r.y && e.button.y < r.y + r.h;
+                    };
                     if (hitBtn == 0)
                         sideMode = sideMode == SideMode::Repair ? SideMode::None
                                                                : SideMode::Repair;
@@ -1163,6 +1181,10 @@ int main(int argc, char** argv) {
                                                              : SideMode::Sell;
                     else if (hitBtn == 2)
                         ; // MAP: radar toggle stub
+                    else if (inRect(arrowUp))
+                        sideScroll = std::clamp(sideScroll - (kCameoH + 4), 0, maxScroll);
+                    else if (inRect(arrowDn))
+                        sideScroll = std::clamp(sideScroll + (kCameoH + 4), 0, maxScroll);
                     else if (sideMode != SideMode::None && e.button.x < viewW) {
                         // Repair/Sell the friendly structure under the cursor.
                         int cellX = cx0 + (e.button.x + int(camX)) / kTile;
@@ -1474,17 +1496,34 @@ int main(int argc, char** argv) {
             int rw = kSidebarW - 8, rh = kRadarH - 4;
             bevelPanel(wc, rx, ry, rw, rh, 0xff101008, /*sunken=*/true);
             int irx = rx + 2, iry = ry + 2, irw = rw - 4, irh = rh - 4;
-            for (int py = 0; py < irh; py++)
-                for (int px = 0; px < irw; px++) {
-                    int sx = px * mapSurf->w / irw, sy = py * mapSurf->h / irh;
-                    uint32_t src = mc.px[sy * mc.pitch + sx];
-                    if (!sim.explored((cy0 + sy / kTile) * kSize + cx0 + sx / kTile))
-                        src = 0xff000000; // unexplored cells are black on the radar
-                    wc.px[(iry + py) * wc.pitch + (irx + px)] = src;
+            // Radar comes online once the house owns a Communications Center
+            // (hq/eye); until then the box shows the faction medallion.
+            bool hasRadar = false;
+            for (const auto& s : sim.structures())
+                if (s.hp > 0 && s.house == playerHouse &&
+                    (s.type == "hq" || s.type == "eye")) {
+                    hasRadar = true;
+                    break;
                 }
+            if (!hasRadar && radarLogo && !radarLogo->frames.empty()) {
+                game::fillRect(wc, irx, iry, irw, irh, 0xff000000);
+                game::BlitOptions lo;
+                lo.colorKey = true;
+                blitIndexedScaled(wc, radarLogo->frames[0].data(), radarLogo->width,
+                                  radarLogo->height, irx, iry, irw, irh, pal, lo);
+            } else {
+                for (int py = 0; py < irh; py++)
+                    for (int px = 0; px < irw; px++) {
+                        int sx = px * mapSurf->w / irw, sy = py * mapSurf->h / irh;
+                        uint32_t src = mc.px[sy * mc.pitch + sx];
+                        if (!sim.explored((cy0 + sy / kTile) * kSize + cx0 + sx / kTile))
+                            src = 0xff000000; // unexplored cells are black on radar
+                        wc.px[(iry + py) * wc.pitch + (irx + px)] = src;
+                    }
+            }
             auto blip = [&](int cell, const std::string& house) {
-                if (!sim.explored(cell))
-                    return; // don't reveal units hidden by shroud
+                if (!hasRadar || !sim.explored(cell))
+                    return; // no radar (or shrouded) → no blips
                 int bx = irx + (cell % kSize - cx0) * irw / cw;
                 int by = iry + (cell / kSize - cy0) * irh / ch;
                 uint32_t col = house == "Neutral" ? 0xffb0b0b0
@@ -1547,7 +1586,7 @@ int main(int argc, char** argv) {
                 for (int i = 0; i < int(list.size()); i++) {
                     int ex, ey;
                     entryPos(col, i, ex, ey);
-                    if (ey + kCameoH < kSideTop - kCameoH || ey >= winH)
+                    if (ey + kCameoH < kSideTop || ey >= sideBot)
                         continue;
                     const auto& en = *list[i];
                     // TD cameos are 32x24 — scale to fill the 64x48 slot.
@@ -1580,15 +1619,41 @@ int main(int argc, char** argv) {
                     }
                 }
             };
-            // Empty recessed cameo slots so a sparse sidebar still reads as a
-            // framed grid (the original's fixed slot background).
+            // Empty cameo slots: the original's metallic strip texture (real
+            // DOS art, scaled 2x), so a sparse sidebar reads as a framed grid.
+            const fmt::ShpFile* stripArt = art.shp("strip");
             for (int col = 0; col < 2; col++)
-                for (int ey = kSideTop; ey + kCameoH <= winH; ey += kCameoH + 4) {
+                for (int ey = kSideTop; ey + kCameoH <= sideBot; ey += kCameoH + 4) {
                     int ex = viewW + kSideColX + col * (kCameoW + 4);
-                    bevelPanel(wc, ex, ey, kCameoW, kCameoH, 0xff1a1a16, /*sunken=*/true);
+                    if (stripArt && !stripArt->frames.empty())
+                        blitIndexedScaled(wc, stripArt->frames[0].data(),
+                                          stripArt->width, stripArt->height, ex, ey,
+                                          kCameoW, kCameoH, pal);
+                    else
+                        bevelPanel(wc, ex, ey, kCameoW, kCameoH, 0xff1a1a16, true);
                 }
             drawStrip(visStructs, 0);
             drawStrip(visUnits, 1);
+
+            // Scroll arrows (real DOS art) — shown only when the strips overflow.
+            {
+                int rows = int(std::max(visStructs.size(), visUnits.size()));
+                int maxScr = std::max(0, kSideTop + rows * (kCameoH + 4) + 4 - sideBot);
+                if (maxScr > 0) {
+                    auto arrow = [&](const char* name, const SDL_Rect& r, bool on) {
+                        const fmt::ShpFile* a = art.shp(name);
+                        if (a && !a->frames.empty()) {
+                            game::BlitOptions o;
+                            o.colorKey = true;
+                            blitIndexedScaled(wc, a->frames[0].data(), a->width,
+                                              a->height, r.x, r.y, r.w, r.h, pal, o);
+                        } else
+                            bevelPanel(wc, r.x, r.y, r.w, r.h, on ? kLight : kFace);
+                    };
+                    arrow("stripup", arrowUp, sideScroll > 0);
+                    arrow("stripdn", arrowDn, sideScroll < maxScr);
+                }
+            }
 
             // ---- Top tab bar: OPTIONS | power/credits | SIDEBAR ----
             bevelPanel(wc, 0, 0, winW, kTopBar, kFace);
