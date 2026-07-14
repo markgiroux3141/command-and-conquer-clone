@@ -153,6 +153,7 @@ struct DrawObject {
     bool selectable = false;
     int health = 256;
     bool selected = false;
+    bool infantry = false; // tight selection box (infantry frames are mostly pad)
     int unitId = -1;   // sim unit id, -1 for structures
     int structId = -1; // sim structure id, -1 for units
 };
@@ -224,6 +225,93 @@ const char* kTdVehTypes[] = {"mcv",  "htnk", "mtnk", "ltnk", "ftnk", "stnk",
                              "bggy", "jeep", "bike", "apc",  "arty", "msam",
                              "harv"};
 
+// Friendly cameo/tooltip name for a build type code. Falls back to the
+// uppercased code for anything not listed (so nothing ever renders blank).
+std::string displayName(const std::string& type) {
+    static const std::unordered_map<std::string, const char*> kNames = {
+        // Tiberian Dawn structures
+        {"nuke", "POWER PLANT"}, {"nuk2", "ADVANCED POWER PLANT"},
+        {"proc", "TIBERIUM REFINERY"}, {"silo", "TIBERIUM SILO"},
+        {"pyle", "BARRACKS"}, {"hand", "HAND OF NOD"},
+        {"weap", "WEAPONS FACTORY"}, {"hq", "COMMUNICATIONS CENTER"},
+        {"fix", "REPAIR FACILITY"}, {"hpad", "HELIPAD"}, {"afld", "AIRSTRIP"},
+        {"gun", "GUN TURRET"}, {"gtwr", "GUARD TOWER"},
+        {"atwr", "ADVANCED GUARD TOWER"}, {"obli", "OBELISK OF LIGHT"},
+        {"sam", "SAM SITE"}, {"tmpl", "TEMPLE OF NOD"}, {"eye", "ADV. COMM. CENTER"},
+        // Tiberian Dawn infantry
+        {"e1", "MINIGUNNER"}, {"e2", "GRENADIER"}, {"e3", "ROCKET SOLDIER"},
+        {"e4", "FLAMETHROWER"}, {"e5", "CHEM WARRIOR"}, {"e6", "ENGINEER"},
+        {"rmbo", "COMMANDO"},
+        // Tiberian Dawn vehicles
+        {"mcv", "MOBILE CONSTRUCTION VEHICLE"}, {"htnk", "MAMMOTH TANK"},
+        {"mtnk", "MEDIUM TANK"}, {"ltnk", "LIGHT TANK"}, {"ftnk", "FLAME TANK"},
+        {"stnk", "STEALTH TANK"}, {"bggy", "NOD BUGGY"}, {"jeep", "HUM-VEE"},
+        {"bike", "RECON BIKE"}, {"apc", "APC"}, {"arty", "ARTILLERY"},
+        {"msam", "ROCKET LAUNCHER"}, {"harv", "HARVESTER"},
+        // Red Alert extras (best-effort; shared codes above still apply)
+        {"powr", "POWER PLANT"}, {"apwr", "ADVANCED POWER PLANT"},
+        {"barr", "BARRACKS"}, {"tent", "SOVIET BARRACKS"}, {"dome", "RADAR DOME"},
+        {"tsla", "TESLA COIL"}, {"ftur", "FLAME TOWER"}, {"agun", "AA GUN"},
+        {"pbox", "PILLBOX"}, {"hbox", "CAMO PILLBOX"}, {"gap", "GAP GENERATOR"},
+        {"atek", "ALLIED TECH CENTER"}, {"stek", "SOVIET TECH CENTER"},
+        {"kenn", "KENNEL"}, {"1tnk", "LIGHT TANK"}, {"2tnk", "MEDIUM TANK"},
+        {"3tnk", "HEAVY TANK"}, {"4tnk", "MAMMOTH TANK"}, {"v2rl", "V2 LAUNCHER"},
+        {"ttnk", "TESLA TANK"}, {"dog", "ATTACK DOG"}, {"medi", "MEDIC"},
+        {"spy", "SPY"}, {"thf", "THIEF"},
+    };
+    auto it = kNames.find(type);
+    if (it != kNames.end())
+        return it->second;
+    std::string up = type;
+    for (auto& ch : up)
+        ch = char(std::toupper((unsigned char)ch));
+    return up;
+}
+
+// Contextual mouse cursors. Frame ranges into TD mouse.shp, taken verbatim
+// from MOUSE.CPP MouseControl[] ({StartFrame, FrameCount, FrameRate, X, Y};
+// FrameRate is game ticks per animation frame, X/Y the hotspot offset).
+enum class Cursor {
+    Normal, ScrollN, ScrollNE, ScrollE, ScrollSE, ScrollS, ScrollSW, ScrollW,
+    ScrollNW, NoScrollN, NoScrollNE, NoScrollE, NoScrollSE, NoScrollS, NoScrollSW,
+    NoScrollW, NoScrollNW, CanMove, NoMove, Deploy, Select, Attack, Sell, Repair,
+    NoRepair, NoSell, Guard, Count
+};
+struct CursorCtl {
+    int start, count, rate, hotX, hotY;
+};
+constexpr CursorCtl kCursors[] = {
+    {0, 1, 0, 0, 0},      // Normal
+    {1, 1, 0, 15, 0},     // ScrollN
+    {2, 1, 0, 29, 0},     // ScrollNE
+    {3, 1, 0, 29, 12},    // ScrollE
+    {4, 1, 0, 29, 23},    // ScrollSE
+    {5, 1, 0, 15, 23},    // ScrollS
+    {6, 1, 0, 0, 23},     // ScrollSW
+    {7, 1, 0, 0, 13},     // ScrollW
+    {8, 1, 0, 0, 0},      // ScrollNW
+    {130, 1, 0, 15, 0},   // NoScrollN
+    {131, 1, 0, 29, 0},   // NoScrollNE
+    {132, 1, 0, 29, 12},  // NoScrollE
+    {133, 1, 0, 29, 23},  // NoScrollSE
+    {134, 1, 0, 15, 23},  // NoScrollS
+    {135, 1, 0, 0, 23},   // NoScrollSW
+    {136, 1, 0, 0, 13},   // NoScrollW
+    {137, 1, 0, 0, 0},    // NoScrollNW
+    {10, 1, 0, 15, 12},   // CanMove
+    {11, 1, 0, 15, 12},   // NoMove
+    {53, 9, 4, 15, 12},   // Deploy
+    {12, 6, 4, 15, 12},   // Select
+    {18, 8, 4, 15, 12},   // Attack
+    {62, 24, 2, 15, 12},  // Sell (sell-back building)
+    {29, 24, 2, 15, 12},  // Repair
+    {126, 1, 0, 15, 12},  // NoRepair
+    {125, 1, 0, 15, 12},  // NoSell
+    {153, 1, 0, 15, 12},  // Guard
+};
+static_assert(sizeof(kCursors) / sizeof(kCursors[0]) == size_t(Cursor::Count),
+              "cursor table out of sync with enum");
+
 bool isSovietHouse(const std::string& house) {
     return house == "USSR" || house == "Ukraine" || house == "BadGuy";
 }
@@ -248,9 +336,25 @@ void drawObject(game::Canvas& c, const DrawObject& o, const fmt::Palette& pal,
                     o.x - offX, o.y - offY, pal, opts);
 
     if (o.selected) {
-        int x = o.x - offX, y = o.y - offY, w = o.shp->width, h = o.shp->height;
+        // Selection box. Infantry frames are 50x39 but the figure is small and
+        // centered, so bracket a tight box around it instead of the whole frame;
+        // vehicles/structures fill their frame, so use its bounds.
+        int x, y, w, h;
+        if (o.infantry) {
+            int cx = o.x - offX + o.shp->width / 2;   // frame center
+            int cy = o.y - offY + o.shp->height / 2;  // ~figure's feet
+            w = 14;
+            h = 20;
+            x = cx - w / 2;
+            y = cy - 16; // head..feet
+        } else {
+            x = o.x - offX;
+            y = o.y - offY;
+            w = o.shp->width;
+            h = o.shp->height;
+        }
         const uint32_t kWhite = 0xffffffff;
-        int len = std::max(3, w / 5);
+        int len = std::clamp(std::min(w, h) / 3, 3, 8); // corner-bracket arm length
         game::fillRect(c, x, y, len, 1, kWhite);
         game::fillRect(c, x, y, 1, len, kWhite);
         game::fillRect(c, x + w - len, y, len, 1, kWhite);
@@ -259,6 +363,7 @@ void drawObject(game::Canvas& c, const DrawObject& o, const fmt::Palette& pal,
         game::fillRect(c, x, y + h - len, 1, len, kWhite);
         game::fillRect(c, x + w - len, y + h - 1, len, 1, kWhite);
         game::fillRect(c, x + w - 1, y + h - len, 1, len, kWhite);
+        // Health bar just above the box (green/yellow/red by fraction).
         int frac = std::clamp(o.health, 0, 256);
         uint32_t color = frac > 170 ? 0xff00c000 : frac > 85 ? 0xffe0e000 : 0xffc00000;
         game::drawRect(c, x, y - 5, w, 4, 0xff000000);
@@ -736,6 +841,7 @@ int main(int argc, char** argv) {
             o.selectable = true;
             o.health = u.healthFrac();
             o.selected = u.selected;
+            o.infantry = u.infantry;
             o.unitId = u.id;
             return o;
         };
@@ -1040,6 +1146,9 @@ int main(int argc, char** argv) {
                                 sim.credits(h), produced, drained);
             }
             if (dumpPath) {
+                if (flagArg(argc, argv, "--select")) // debug: show selection UI
+                    for (auto& u : sim.units())
+                        u.selected = true;
                 for (const auto& o : buildDrawList())
                     drawObject(mc, o, pal, 0, 0);
                 drawEffects(mc, 0, 0);
@@ -1071,12 +1180,48 @@ int main(int argc, char** argv) {
         if (!win)
             throw std::runtime_error(SDL_GetError());
         bool fullscreen = false; // toggled with F11 / Alt+Enter
+
+        // Render pipeline: the whole HUD is drawn each frame into an offscreen
+        // ARGB surface (frameSurf) at a *logical* pixel resolution, uploaded to
+        // a streaming texture, and presented via SDL_RenderCopy into a
+        // letterbox rect (aspect-preserving) computed by hand in the present
+        // step. Windowed: the logical size tracks the window's pixel size 1:1
+        // (native-res, and a bigger window shows more map). Fullscreen: the
+        // logical size freezes at the last windowed size and is scaled up to
+        // fill the display, so a small map no longer sits tiny in a black field.
+        // Mouse coords are mapped back through the same rect (see toLogical),
+        // measuring the window→output pixel ratio so it stays correct under OS
+        // display scaling.
+        SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0"); // nearest — crisp pixels
+        SDL_Renderer* renderer = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED);
+        if (!renderer)
+            renderer = SDL_CreateRenderer(win, -1, 0); // software fallback
+        if (!renderer)
+            throw std::runtime_error(SDL_GetError());
+        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255); // black letterbox bars
+        int logicalW = 0, logicalH = 0; // current frameSurf/frameTex size
+        SDL_Surface* frameSurf = nullptr;
+        SDL_Texture* frameTex = nullptr;
+
         SDL_ShowCursor(SDL_DISABLE);
+        // mouse.shp is Dune II-format (per-frame sizes). TD ships it in the
+        // local UI dir (CCLOCAL / covert-ops LOCAL), not CONQUER; RA in hires.
         std::optional<fmt::ShpD2File> cursor;
-        try {
-            cursor = fmt::ShpD2File::load((isTd ? conquerDir : hiresDir) + "/mouse.shp");
-        } catch (const std::exception& ex) {
-            std::printf("note: no cursor art (%s), using OS cursor\n", ex.what());
+        std::vector<std::string> cursorPaths =
+            isTd ? std::vector<std::string>{fontDir + "/mouse.shp",
+                                            root + "/INSTALL/LOCAL/mouse.shp",
+                                            conquerDir + "/mouse.shp"}
+                 : std::vector<std::string>{hiresDir + "/mouse.shp",
+                                            root + "/INSTALL/REDALERT/lores/mouse.shp"};
+        for (const auto& p : cursorPaths) {
+            try {
+                cursor = fmt::ShpD2File::load(p);
+                break;
+            } catch (const std::exception&) {
+            }
+        }
+        if (!cursor) {
+            std::printf("note: no cursor art found, using OS cursor\n");
             SDL_ShowCursor(SDL_ENABLE);
         }
 
@@ -1089,6 +1234,11 @@ int main(int argc, char** argv) {
         int musicIdx = 0;
         // Tracks per-category production "ready" so EVA announces the edge once.
         bool wasReady[int(game::Sim::ProdCat::Count)] = {};
+        // Buildable type set last frame; when it grows (a finished building
+        // unlocks new cameos) EVA says "new construction options". Seeded on the
+        // first frame so the starting roster doesn't trigger it.
+        std::set<std::string> prevBuildable;
+        bool buildableSeeded = false;
 
         float camX = 0, camY = 0;
         const float kSpeed = 480.0f;
@@ -1098,6 +1248,19 @@ int main(int argc, char** argv) {
         uint32_t last = SDL_GetTicks();
         double tickAcc = 0;
         bool quit = false;
+        // Internal render resolution: the frame renders at this logical size and
+        // is scaled to fill the display, so the zoom is CONSISTENT regardless of
+        // window/monitor size (a small resolution = zoomed-in / native feel). The
+        // height is picked from presets; width follows the display's aspect. +/-
+        // cycles it. 360 ≈ the original SVGA zoom on a 16:9 display.
+        static const int kResHeights[] = {360, 480, 600, 720, 900};
+        int resIndex = 0;
+        // Build sidebar show/hide (SIDEBAR tab); `slide` animates 1→0 as it
+        // retracts off the right edge and the tactical view widens to fill.
+        bool sidebarOn = true;
+        float slide = 1.0f;
+        uint32_t slidePrev = SDL_GetTicks();
+        SDL_Rect sidebarTabRect{}; // "SIDEBAR" tab hitbox (recomputed each frame)
 
         // ---- Sidebar layout + placement mode state ----
         std::string placingType; // building awaiting placement (ghost follows mouse)
@@ -1138,11 +1301,71 @@ int main(int argc, char** argv) {
                                                       : game::Sim::ProdCat::Vehicle;
         };
 
+        // The letterbox destination rect (in renderer output pixels) that the
+        // logical frame is scaled into this frame. Recomputed in the present
+        // step; mouse mapping reads it back.
+        SDL_Rect present{0, 0, 0, 0};
+        // Map a mouse coord (in SDL "window" space — same space GetMouseState
+        // and button events use) into logical frame pixels. Done explicitly to
+        // stay correct under OS display scaling (high-DPI), where window space
+        // and renderer output pixels differ: SDL_RenderWindowToLogical doesn't
+        // apply that ratio reliably, so we measure it ourselves each call.
+        auto toLogical = [&](int wx, int wy, int& lx, int& ly) {
+            int outW = 0, outH = 0, winPtW = 0, winPtH = 0;
+            SDL_GetRendererOutputSize(renderer, &outW, &outH); // pixels
+            SDL_GetWindowSize(win, &winPtW, &winPtH);          // window space
+            float dpiX = winPtW ? float(outW) / winPtW : 1.0f;
+            float dpiY = winPtH ? float(outH) / winPtH : 1.0f;
+            float px = wx * dpiX, py = wy * dpiY; // window space -> output pixels
+            float s = present.w > 0 ? float(present.w) / logicalW : 1.0f;
+            lx = int((px - present.x) / s);
+            ly = int((py - present.y) / s);
+        };
+
         while (!quit) {
-            // Re-layout from the live window size each frame: a bigger window
-            // (or fullscreen) simply shows more map, sidebar snaps to the right.
-            SDL_GetWindowSize(win, &winW, &winH);
-            viewW = std::max(64, winW - kSidebarW);
+            // Logical render resolution: a fixed internal height (the picked
+            // preset) with the width matched to the display aspect, then scaled
+            // to fill the output. This keeps the zoom the same whether windowed
+            // or fullscreen — fullscreen just scales the native frame up.
+            {
+                int outW = 0, outH = 0;
+                SDL_GetRendererOutputSize(renderer, &outW, &outH);
+                if (outH < 1)
+                    outH = 1;
+                int lh = kResHeights[resIndex];
+                logicalH = std::max(kTopBar + 32, lh);
+                logicalW = std::max(kSidebarW + 64, int(1LL * lh * outW / outH));
+            }
+            // (Re)create the offscreen frame + texture when the logical size
+            // changes (first frame, resize, zoom change, fullscreen).
+            if (!frameSurf || frameSurf->w != logicalW || frameSurf->h != logicalH) {
+                if (frameSurf)
+                    SDL_FreeSurface(frameSurf);
+                if (frameTex)
+                    SDL_DestroyTexture(frameTex);
+                frameSurf = SDL_CreateRGBSurfaceWithFormat(0, logicalW, logicalH, 32,
+                                                           SDL_PIXELFORMAT_ARGB8888);
+                frameTex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888,
+                                             SDL_TEXTUREACCESS_STREAMING, logicalW,
+                                             logicalH);
+                if (!frameSurf || !frameTex)
+                    throw std::runtime_error(SDL_GetError());
+            }
+            winW = logicalW;
+            winH = logicalH;
+            // Animate the sidebar slide toward its target (≈0.15s), then place
+            // the tactical view: as the sidebar retracts, viewW grows to fill.
+            {
+                uint32_t nowMs = SDL_GetTicks();
+                float sdt = (nowMs - slidePrev) / 1000.0f;
+                slidePrev = nowMs;
+                float target = sidebarOn ? 1.0f : 0.0f;
+                if (slide < target)
+                    slide = std::min(target, slide + sdt / 0.15f);
+                else if (slide > target)
+                    slide = std::max(target, slide - sdt / 0.15f);
+            }
+            viewW = std::max(64, winW - int(slide * kSidebarW + 0.5f));
             // Lay out the REPAIR|SELL|MAP buttons for this frame's width.
             {
                 const char* bl[3] = {"REPAIR", "SELL", "MAP"};
@@ -1162,11 +1385,21 @@ int main(int argc, char** argv) {
             int sideBot = winH - 26; // cameo columns stop above the arrow strip
             arrowUp = SDL_Rect{viewW + kSidebarW - 4 - 64, sideBot + 1, 32, 24};
             arrowDn = SDL_Rect{viewW + kSidebarW - 4 - 32, sideBot + 1, 32, 24};
+            // "SIDEBAR" tab hitbox (top-right); clicking it shows/hides the sidebar.
+            {
+                int wSide = (hudFont ? game::textWidth(*hudFont, "SIDEBAR") : 40) + 10;
+                sidebarTabRect = SDL_Rect{winW - 1 - wSide, 1, wSide, kTopBar - 2};
+            }
             // Advance the jukebox when the current track ends.
             if (mixer.enabled() && !mixer.musicPlaying())
                 mixer.playMusic(kScores[musicIdx++ % (int(sizeof(kScores) / sizeof(kScores[0])))]);
             int mx, my;
-            uint32_t mstate = SDL_GetMouseState(&mx, &my);
+            uint32_t mstate;
+            {
+                int wx = 0, wy = 0;
+                mstate = SDL_GetMouseState(&wx, &wy);
+                toLogical(wx, wy, mx, my); // window → logical (DPI/letterbox-aware)
+            }
             auto objects = buildDrawList();
 
             // Only show cameos whose prerequisites are currently met (the
@@ -1182,6 +1415,14 @@ int main(int argc, char** argv) {
 
             SDL_Event e;
             while (SDL_PollEvent(&e)) {
+                // Map mouse-button coords from window space into logical space
+                // so clicks line up with the letterbox-scaled frame.
+                if (e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEBUTTONUP) {
+                    int lx = 0, ly = 0;
+                    toLogical(e.button.x, e.button.y, lx, ly);
+                    e.button.x = lx;
+                    e.button.y = ly;
+                }
                 if (e.type == SDL_QUIT)
                     quit = true;
                 if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE) {
@@ -1199,6 +1440,15 @@ int main(int argc, char** argv) {
                     fullscreen = !fullscreen;
                     SDL_SetWindowFullscreen(
                         win, fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+                }
+                // Change render resolution: + zooms in (lower res), - zooms out.
+                if (e.type == SDL_KEYDOWN) {
+                    auto s = e.key.keysym.sym;
+                    int n = int(sizeof(kResHeights) / sizeof(kResHeights[0]));
+                    if (s == SDLK_EQUALS || s == SDLK_PLUS || s == SDLK_KP_PLUS)
+                        resIndex = std::max(0, resIndex - 1);
+                    else if (s == SDLK_MINUS || s == SDLK_KP_MINUS)
+                        resIndex = std::min(n - 1, resIndex + 1);
                 }
                 int rows = int(std::max(visStructs.size(), visUnits.size()));
                 int maxScroll = std::max(0, kSideTop + rows * (kCameoH + 4) + 4 - sideBot);
@@ -1218,7 +1468,10 @@ int main(int argc, char** argv) {
                         return e.button.x >= r.x && e.button.x < r.x + r.w &&
                                e.button.y >= r.y && e.button.y < r.y + r.h;
                     };
-                    if (hitBtn == 0)
+                    if (inRect(sidebarTabRect)) {
+                        sidebarOn = !sidebarOn; // show/hide the build sidebar
+                        mixer.playSound("bleep2");
+                    } else if (hitBtn == 0)
                         sideMode = sideMode == SideMode::Repair ? SideMode::None
                                                                : SideMode::Repair;
                     else if (hitBtn == 1)
@@ -1281,15 +1534,12 @@ int main(int argc, char** argv) {
                 if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT &&
                     dragging) {
                     dragging = false;
-                    int x0 = std::min(dragX0, e.button.x) + int(camX);
-                    int y0 = std::min(dragY0, e.button.y) + int(camY);
-                    int x1 = std::max(dragX0, e.button.x) + int(camX);
-                    int y1 = std::max(dragY0, e.button.y) + int(camY);
-                    bool box = (x1 - x0) > 4 || (y1 - y0) > 4;
-                    for (auto& s : structures)
-                        s.selected = false;
-                    for (auto& u : sim.units())
-                        u.selected = false;
+                    auto clearSel = [&]() {
+                        for (auto& s : structures)
+                            s.selected = false;
+                        for (auto& u : sim.units())
+                            u.selected = false;
+                    };
                     auto selectHit = [&](const DrawObject& o) {
                         if (o.unitId >= 0) {
                             for (auto& u : sim.units())
@@ -1301,118 +1551,135 @@ int main(int argc, char** argv) {
                                     s.selected = s.selectable;
                         }
                     };
-                    if (box) {
+                    auto ackSelection = [&]() {
+                        int n = 0;
+                        bool inf = false;
+                        for (const auto& su : sim.units())
+                            if (su.selected) {
+                                if (!n)
+                                    inf = su.infantry;
+                                n++;
+                            }
+                        if (n)
+                            mixer.playVoice(inf ? "report1" : "vehic1", inf ? 4 : 2);
+                    };
+                    int x0 = std::min(dragX0, e.button.x) + int(camX);
+                    int y0 = std::min(dragY0, e.button.y) + int(camY);
+                    int x1 = std::max(dragX0, e.button.x) + int(camX);
+                    int y1 = std::max(dragY0, e.button.y) + int(camY);
+                    if ((x1 - x0) > 4 || (y1 - y0) > 4) {
+                        // Rubber-band box: select everything inside it.
+                        clearSel();
                         for (const auto& o : objects)
                             if (o.selectable && o.x < x1 && o.x + o.shp->width > x0 &&
                                 o.y < y1 && o.y + o.shp->height > y0)
                                 selectHit(o);
+                        ackSelection();
                     } else {
-                        for (auto it = objects.rbegin(); it != objects.rend(); ++it) {
-                            if (it->selectable && x1 >= it->x &&
-                                x1 < it->x + it->shp->width && y1 >= it->y &&
-                                y1 < it->y + it->shp->height) {
-                                selectHit(*it);
-                                break;
-                            }
-                        }
-                    }
-                    // Acknowledge a fresh selection with a unit response.
-                    int selCount = 0;
-                    bool selInf = false;
-                    for (const auto& su : sim.units())
-                        if (su.selected) {
-                            if (!selCount)
-                                selInf = su.infantry;
-                            selCount++;
-                        }
-                    if (selCount)
-                        mixer.playVoice(selInf ? "report1" : "vehic1", selInf ? 4 : 2);
-                }
-                if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_RIGHT &&
-                    e.button.x >= viewW) {
-                    // Sidebar: right-click cancels that cameo's production.
-                    if (const BuildEntry* en = sidebarHit(e.button.x, e.button.y)) {
-                        auto cat = prodCatOf(en->kind);
-                        const auto* p = sim.production(playerHouse, cat);
-                        if (p && p->type == en->type) {
-                            sim.cancelProduction(playerHouse, cat);
-                            mixer.playEva("cancel1"); // "canceled"
-                            if (placingType == en->type)
-                                placingType.clear();
-                        }
-                    }
-                }
-                if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_RIGHT &&
-                    e.button.x < viewW && !placingType.empty()) {
-                    placingType.clear(); // abort placement, keep it ready
-                }
-                if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_RIGHT &&
-                    e.button.x < viewW && placingType.empty()) {
-                    int wx = e.button.x + int(camX), wy = e.button.y + int(camY);
-                    int cellX = cx0 + wx / kTile, cellY = cy0 + wy / kTile;
-                    if (cellX >= 0 && cellX < kSize && cellY >= 0 && cellY < kSize) {
+                        // Single left-click = the contextual command the cursor
+                        // showed: select / move / attack / deploy (original C&C
+                        // used left-click to command; right-click deselects).
+                        int wx = e.button.x + int(camX), wy = e.button.y + int(camY);
+                        int cellX = cx0 + wx / kTile, cellY = cy0 + wy / kTile;
+                        int cell = cellY * kSize + cellX;
+                        bool inGrid = cellX >= 0 && cellX < kSize && cellY >= 0 &&
+                                      cellY < kSize;
                         std::vector<int> ids;
                         for (const auto& u : sim.units())
                             if (u.selected)
                                 ids.push_back(u.id);
-                        // Right-click on an enemy = attack; on an own selected
-                        // MCV = deploy; otherwise move (or harvest ore).
-                        int tu = -1, ts = -1;
-                        bool deployed = false;
-                        for (auto it = objects.rbegin(); it != objects.rend(); ++it) {
-                            if (wx < it->x || wx >= it->x + it->shp->width ||
-                                wy < it->y || wy >= it->y + it->shp->height)
-                                continue;
-                            if (it->unitId >= 0) {
-                                const auto* u = sim.findUnit(it->unitId);
-                                if (u && u->house == playerHouse && u->selected &&
-                                    u->type == "mcv") {
-                                    int fw = 0, fh = 0;
-                                    int mcvCell = u->cell();
+                        const DrawObject* hit = nullptr;
+                        for (auto it = objects.rbegin(); it != objects.rend(); ++it)
+                            if (it->selectable && wx >= it->x &&
+                                wx < it->x + it->shp->width && wy >= it->y &&
+                                wy < it->y + it->shp->height) {
+                                hit = &*it;
+                                break;
+                            }
+                        bool acted = false;
+                        if (hit && hit->unitId >= 0) {
+                            const auto* u = sim.findUnit(hit->unitId);
+                            if (u && u->house != playerHouse && !ids.empty()) {
+                                sim.orderAttack(ids, u->id, -1);
+                                mixer.playVoice("affirm1", 4);
+                                acted = true;
+                            } else if (u && u->house == playerHouse) {
+                                if (u->selected && u->type == "mcv") {
+                                    int fw = 0, fh = 0, mcvCell = u->cell();
                                     if (structFootprint("fact", fw, fh)) {
                                         int sid = sim.deployMcv(u->id, fw, fh);
                                         if (sid >= 0)
                                             startBuildup("fact", playerHouse,
                                                          mcvCell - 1 - kSize, sid);
                                         else
-                                            mixer.playEva("deploy1"); // can't deploy here
+                                            mixer.playEva("deploy1");
                                     }
-                                    deployed = true;
-                                    break;
-                                }
-                                if (u && u->house != playerHouse) {
-                                    tu = u->id;
-                                    break;
-                                }
-                            } else if (it->structId >= 0 && it->selectable) {
-                                const auto* s = sim.findStructure(it->structId);
-                                if (s && s->house != playerHouse) {
-                                    ts = s->id;
-                                    break;
+                                    acted = true;
+                                } else {
+                                    clearSel();
+                                    selectHit(*hit);
+                                    ackSelection();
+                                    acted = true;
                                 }
                             }
+                        } else if (hit && hit->structId >= 0) {
+                            const auto* s = sim.findStructure(hit->structId);
+                            if (s && s->house != playerHouse && !ids.empty()) {
+                                sim.orderAttack(ids, -1, s->id);
+                                mixer.playVoice("affirm1", 4);
+                                acted = true;
+                            } else if (s && s->house == playerHouse) {
+                                clearSel();
+                                selectHit(*hit);
+                                ackSelection();
+                                acted = true;
+                            }
                         }
-                        int cell = cellY * kSize + cellX;
-                        if (ids.empty() || deployed)
-                            ; // nothing selected (or the click deployed an MCV)
-                        else if (tu >= 0 || ts >= 0) {
-                            sim.orderAttack(ids, tu, ts);
-                            mixer.playVoice("affirm1", 4); // "affirmative"
-                        } else if (sim.oreAt(cell) > 0) {
-                            // Harvesters gather; anyone else just drives there.
-                            std::vector<int> harv, rest;
-                            for (int id : ids)
-                                (sim.findUnit(id)->harvester ? harv : rest)
-                                    .push_back(id);
-                            if (!harv.empty())
-                                sim.orderHarvest(harv, cell);
-                            if (!rest.empty())
-                                sim.orderMove(rest, cell);
-                            mixer.playVoice("movout1", 4); // "movin' out"
-                        } else {
-                            sim.orderMove(ids, cell);
-                            mixer.playVoice("movout1", 4); // "movin' out"
+                        if (!acted) {
+                            if (!ids.empty() && inGrid) {
+                                if (sim.oreAt(cell) > 0) {
+                                    std::vector<int> harv, rest;
+                                    for (int id : ids)
+                                        (sim.findUnit(id)->harvester ? harv : rest)
+                                            .push_back(id);
+                                    if (!harv.empty())
+                                        sim.orderHarvest(harv, cell);
+                                    if (!rest.empty())
+                                        sim.orderMove(rest, cell);
+                                    mixer.playVoice("movout1", 4);
+                                } else {
+                                    sim.orderMove(ids, cell);
+                                    mixer.playVoice("movout1", 4);
+                                }
+                            } else {
+                                clearSel(); // empty ground, nothing to command
+                            }
                         }
+                    }
+                }
+                if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_RIGHT) {
+                    // Original C&C: right-click cancels — production on the
+                    // sidebar, placement/sell-repair mode, else deselect.
+                    if (e.button.x >= viewW) {
+                        if (const BuildEntry* en = sidebarHit(e.button.x, e.button.y)) {
+                            auto cat = prodCatOf(en->kind);
+                            const auto* p = sim.production(playerHouse, cat);
+                            if (p && p->type == en->type) {
+                                sim.cancelProduction(playerHouse, cat);
+                                mixer.playEva("cancel1");
+                                if (placingType == en->type)
+                                    placingType.clear();
+                            }
+                        }
+                    } else if (!placingType.empty()) {
+                        placingType.clear();
+                    } else if (sideMode != SideMode::None) {
+                        sideMode = SideMode::None;
+                    } else {
+                        for (auto& s : structures)
+                            s.selected = false;
+                        for (auto& u : sim.units())
+                            u.selected = false;
                     }
                 }
             }
@@ -1425,6 +1692,25 @@ int main(int argc, char** argv) {
                     mixer.playEva(c == int(game::Sim::ProdCat::Building) ? "constru1"
                                                                         : "unitredy");
                 wasReady[c] = ready;
+            }
+            // EVA: "new construction options" when a new buildable type appears
+            // (e.g. deploying the MCV / finishing a building unlocks cameos).
+            {
+                std::set<std::string> cur;
+                for (const auto* en : visStructs)
+                    cur.insert(en->type);
+                for (const auto* en : visUnits)
+                    cur.insert(en->type);
+                if (!buildableSeeded) {
+                    buildableSeeded = true;
+                } else {
+                    for (const auto& t : cur)
+                        if (!prevBuildable.count(t)) {
+                            mixer.playEva("newopt1");
+                            break;
+                        }
+                }
+                prevBuildable = std::move(cur);
             }
 
             // No in-game font yet: surface credits/power in the title bar.
@@ -1454,54 +1740,38 @@ int main(int argc, char** argv) {
 
             const Uint8* keys = SDL_GetKeyboardState(nullptr);
             float dx = 0, dy = 0;
-            // Screen-edge scroll only inside the tactical viewport (never over
-            // the sidebar or tab bar); the arrow/WASD keys work anywhere.
-            bool inView = mx >= 0 && mx < viewW && my >= kTopBar && my < winH;
-            if (keys[SDL_SCANCODE_A] || keys[SDL_SCANCODE_LEFT] || (inView && mx < kEdge))
+            // Screen-edge scroll fires at the true window edges — like the
+            // original, it works even when the cursor is over the sidebar or tab
+            // bar (which sit on the top/right screen edges). Arrow keys / WASD too.
+            bool onFrame = mx >= 0 && mx < winW && my >= 0 && my < winH;
+            if (keys[SDL_SCANCODE_A] || keys[SDL_SCANCODE_LEFT] || (onFrame && mx < kEdge))
                 dx -= 1;
             if (keys[SDL_SCANCODE_D] || keys[SDL_SCANCODE_RIGHT] ||
-                (inView && mx >= viewW - kEdge))
+                (onFrame && mx >= winW - kEdge))
                 dx += 1;
-            if (keys[SDL_SCANCODE_W] || keys[SDL_SCANCODE_UP] ||
-                (inView && my < kTopBar + kEdge))
+            if (keys[SDL_SCANCODE_W] || keys[SDL_SCANCODE_UP] || (onFrame && my < kEdge))
                 dy -= 1;
             if (keys[SDL_SCANCODE_S] || keys[SDL_SCANCODE_DOWN] ||
-                (inView && my >= winH - kEdge))
+                (onFrame && my >= winH - kEdge))
                 dy += 1;
             camX = std::clamp(camX + dx * kSpeed * dt, 0.0f,
                               std::max(0.0f, float(mapSurf->w - viewW)));
             camY = std::clamp(camY + dy * kSpeed * dt, 0.0f,
                               std::max(0.0f, float(mapSurf->h - winH)));
 
-            SDL_Surface* wsurf = SDL_GetWindowSurface(win);
-            if (!wsurf)
-                continue;
-            game::Canvas wc = game::Canvas::wrap(wsurf);
+            game::Canvas wc = game::Canvas::wrap(frameSurf);
             // Clear the tactical area (window may be larger than the map).
             if (viewW > mapSurf->w || winH > mapSurf->h)
                 game::fillRect(wc, 0, 0, viewW, winH, 0xff000000);
             SDL_Rect src{int(camX), int(camY), viewW, winH};
             SDL_Rect dst{0, 0, viewW, winH};
-            SDL_BlitSurface(mapSurf, &src, wsurf, &dst);
+            SDL_BlitSurface(mapSurf, &src, frameSurf, &dst);
 
             objects = buildDrawList(); // positions may have ticked above
             for (const auto& o : objects)
                 drawObject(wc, o, pal, int(camX), int(camY));
-            // Numeric health % above selected units/structures.
-            if (hudFont)
-                for (const auto& o : objects)
-                    if (o.selected && o.selectable) {
-                        int pct = std::clamp(o.health * 100 / 256, 0, 100);
-                        std::string s = std::to_string(pct) + "%";
-                        uint32_t hc = pct > 66 ? 0xff30ff30
-                                      : pct > 33 ? 0xffe0e030
-                                                 : 0xffff3030;
-                        int tx = o.x - int(camX) + o.shp->width / 2 -
-                                 game::textWidth(*hudFont, s) / 2;
-                        int ty = o.y - int(camY) - 13;
-                        game::drawText(wc, *hudFont, s, tx + 1, ty + 1, 0xff000000);
-                        game::drawText(wc, *hudFont, s, tx, ty, hc);
-                    }
+            // (Selection brackets + a health bar are drawn in drawObject; the
+            // original shows no numeric percentage.)
             // Buildup animations (a building rising up before it goes live).
             for (const auto& b : buildups) {
                 if (b.frame >= int(b.shp->frames.size()))
@@ -1654,15 +1924,8 @@ int main(int argc, char** argv) {
                     if (!building &&
                         sim.credits(playerHouse) < rules.unit(en.type, en.kind).cost)
                         darken(ex, ey, kCameoW, kCameoH);
-                    // Cost label (bottom-right of the cameo) with a 1px shadow.
-                    int cost = rules.unit(en.type, en.kind).cost;
-                    if (hudFont && cost > 0) {
-                        std::string s = "$" + std::to_string(cost);
-                        int tx = ex + kCameoW - game::textWidth(*hudFont, s) - 2;
-                        int ty = ey + kCameoH - hudFont->maxHeight;
-                        game::drawText(wc, *hudFont, s, tx + 1, ty + 1, 0xff000000);
-                        game::drawText(wc, *hudFont, s, tx, ty, kGreen);
-                    }
+                    // Cost isn't drawn in the cell — it's shown in the hover
+                    // tooltip below (like the original).
                     // Raised bezel around the filled slot.
                     game::drawRect(wc, ex - 1, ey - 1, kCameoW + 2, kCameoH + 2, kDark);
                     if (building) {
@@ -1740,22 +2003,144 @@ int main(int argc, char** argv) {
                                std::abs(mx - dragX0) + 1, std::abs(my - dragY0) + 1,
                                0xffffffff);
 
-            if (cursor && !cursor->frames.empty()) {
-                const auto& cf = cursor->frames[0];
-                game::BlitOptions copts;
-                copts.colorKey = true;
-                blitIndexed(wc, cf.pixels.data(), cf.width, cf.height, mx, my, pal, copts);
+            // Cameo hover tooltip: the item's name + cost, shown to the left of
+            // the sidebar (like the original — the cell itself carries no price).
+            if (hudFont && placingType.empty()) {
+                if (const BuildEntry* en = sidebarHit(mx, my)) {
+                    std::string name = displayName(en->type);
+                    std::string cost = "$" + std::to_string(rules.unit(en->type, en->kind).cost);
+                    int lh = hudFont->maxHeight;
+                    int pad = 3;
+                    int tw = std::max(game::textWidth(*hudFont, name),
+                                      game::textWidth(*hudFont, cost));
+                    int bw = tw + pad * 2, bh = lh * 2 + pad * 2;
+                    int bx = viewW - 4 - bw;
+                    int by = std::clamp(my - bh / 2, kTopBar + 2, winH - bh - 2);
+                    game::fillRect(wc, bx, by, bw, bh, 0xff000000);
+                    game::drawRect(wc, bx, by, bw, bh, kGreen);
+                    game::drawText(wc, *hudFont, name, bx + pad, by + pad, kGreen);
+                    game::drawText(wc, *hudFont, cost, bx + pad, by + pad + lh, kGreen);
+                }
             }
 
-            SDL_UpdateWindowSurface(win);
+            // ---- Contextual mouse cursor (TD frame map) ----
+            Cursor curCursor = Cursor::Normal;
+            if (isTd && mx < viewW && my >= kTopBar) {
+                int wx = mx + int(camX), wy = my + int(camY);
+                int cellX = cx0 + wx / kTile, cellY = cy0 + wy / kTile;
+                int cell = cellY * kSize + cellX;
+                bool inGrid = cellX >= 0 && cellX < kSize && cellY >= 0 && cellY < kSize;
+                bool L = mx < kEdge, R = mx >= viewW - kEdge;
+                bool U = my < kTopBar + kEdge, Dn = my >= winH - kEdge;
+                if (L || R || U || Dn) {
+                    // Screen-edge scroll arrow (N,NE,E,SE,S,SW,W,NW = 0..7);
+                    // the "no-scroll" variant when the camera is already clamped.
+                    int dir = U && R ? 1 : R && Dn ? 3 : Dn && L ? 5 : L && U ? 7
+                              : U     ? 0 : R      ? 2 : Dn      ? 4 : 6;
+                    bool up = dir == 7 || dir == 0 || dir == 1;
+                    bool down = dir == 3 || dir == 4 || dir == 5;
+                    bool left = dir == 5 || dir == 6 || dir == 7;
+                    bool right = dir == 1 || dir == 2 || dir == 3;
+                    bool blocked =
+                        (up && camY <= 0) || (down && camY >= mapSurf->h - winH) ||
+                        (left && camX <= 0) || (right && camX >= mapSurf->w - viewW);
+                    curCursor = Cursor(int(blocked ? Cursor::NoScrollN : Cursor::ScrollN) + dir);
+                } else if (sideMode == SideMode::Sell || sideMode == SideMode::Repair) {
+                    int sid = inGrid ? sim.structureAt(cell) : -1;
+                    const auto* st = sid >= 0 ? sim.findStructure(sid) : nullptr;
+                    bool ok = st && st->house == playerHouse;
+                    curCursor = sideMode == SideMode::Sell ? (ok ? Cursor::Sell : Cursor::NoSell)
+                                                           : (ok ? Cursor::Repair : Cursor::NoRepair);
+                } else if (placingType.empty()) {
+                    // Selection / order context.
+                    bool haveSel = false;
+                    game::SpeedClass selCls = game::SpeedClass::Track;
+                    for (const auto& u : sim.units())
+                        if (u.selected) {
+                            haveSel = true;
+                            selCls = u.stats.speedClass;
+                        }
+                    // What (if anything) is under the cursor?
+                    bool enemy = false, ownSelectable = false, overOwnSelMcv = false;
+                    for (auto it = objects.rbegin(); it != objects.rend(); ++it) {
+                        if (!it->selectable || wx < it->x || wx >= it->x + it->shp->width ||
+                            wy < it->y || wy >= it->y + it->shp->height)
+                            continue;
+                        if (it->unitId >= 0) {
+                            const auto* u = sim.findUnit(it->unitId);
+                            if (u) {
+                                if (u->house != playerHouse)
+                                    enemy = true;
+                                else {
+                                    ownSelectable = true;
+                                    if (u->selected && u->type == "mcv")
+                                        overOwnSelMcv = true;
+                                }
+                            }
+                        } else if (it->structId >= 0) {
+                            const auto* s = sim.findStructure(it->structId);
+                            if (s && s->house != playerHouse)
+                                enemy = true;
+                            else if (s)
+                                ownSelectable = true;
+                        }
+                        break;
+                    }
+                    if (haveSel) {
+                        if (enemy)
+                            curCursor = Cursor::Attack;
+                        else if (overOwnSelMcv)
+                            curCursor = Cursor::Deploy;
+                        else if (inGrid && sim.explored(cell) && sim.passable(cell, selCls))
+                            curCursor = Cursor::CanMove;
+                        else if (inGrid)
+                            curCursor = Cursor::NoMove;
+                    } else if (ownSelectable) {
+                        curCursor = Cursor::Select;
+                    }
+                }
+            }
+
+            if (cursor && !cursor->frames.empty()) {
+                const auto& ctl = kCursors[int(curCursor)];
+                int durMs = std::max(1, ctl.rate) * int(kTickMs);
+                int stage = ctl.count > 1 ? int(SDL_GetTicks() / durMs) % ctl.count : 0;
+                int fi = ctl.start + stage;
+                if (fi < 0 || fi >= int(cursor->frames.size()))
+                    fi = 0;
+                const auto& cf = cursor->frames[fi];
+                game::BlitOptions copts;
+                copts.colorKey = true;
+                blitIndexed(wc, cf.pixels.data(), cf.width, cf.height, mx - ctl.hotX,
+                            my - ctl.hotY, pal, copts);
+            }
+
+            // Present: scale the logical frame into the output, preserving
+            // aspect (letterboxed). `present` (output pixels) is reused next
+            // frame by toLogical to map the mouse back into the frame.
+            SDL_UpdateTexture(frameTex, nullptr, frameSurf->pixels, frameSurf->pitch);
+            int outW = 0, outH = 0;
+            SDL_GetRendererOutputSize(renderer, &outW, &outH);
+            float s = std::min(float(outW) / logicalW, float(outH) / logicalH);
+            present = SDL_Rect{int((outW - logicalW * s) / 2),
+                               int((outH - logicalH * s) / 2),
+                               int(logicalW * s), int(logicalH * s)};
+            SDL_RenderClear(renderer);
+            SDL_RenderCopy(renderer, frameTex, nullptr, &present);
+            SDL_RenderPresent(renderer);
             // One-frame screenshot of the real UI (sidebar included).
             if (const char* shot = strArg(argc, argv, "--ui-shot")) {
-                SDL_SaveBMP(wsurf, shot);
+                SDL_SaveBMP(frameSurf, shot);
                 std::printf("wrote %s\n", shot);
                 quit = true;
             }
             SDL_Delay(8);
         }
+        if (frameTex)
+            SDL_DestroyTexture(frameTex);
+        if (frameSurf)
+            SDL_FreeSurface(frameSurf);
+        SDL_DestroyRenderer(renderer);
         SDL_DestroyWindow(win);
         SDL_Quit();
         return 0;

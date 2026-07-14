@@ -458,23 +458,29 @@ int main(int argc, char** argv) {
         std::stable_sort(objects.begin(), objects.end(),
                          [](const DrawObject& a, const DrawObject& b) { return a.y < b.y; });
 
-        // Debug: dump the first cursor frames to verify the D2 SHP decoder.
+        // Debug: dump ALL cursor frames in a grid to verify the D2 SHP decoder
+        // and the frame->cursor mapping. --cursor-path overrides the SHP path.
         if (const char* cursorDump = strArg(argc, argv, "--dump-cursor")) {
-            auto cur = fmt::ShpD2File::load(root + "/INSTALL/REDALERT/hires/mouse.shp");
-            int n = std::min<int>(20, int(cur.frames.size()));
-            SDL_Surface* cs = SDL_CreateRGBSurfaceWithFormat(0, n * 48, 48, 32,
-                                                             SDL_PIXELFORMAT_ARGB8888);
+            const char* cp = strArg(argc, argv, "--cursor-path");
+            auto cur = fmt::ShpD2File::load(
+                cp ? cp : root + "/INSTALL/REDALERT/hires/mouse.shp");
+            int n = int(cur.frames.size());
+            const int cols = 16, cell = 34;
+            int rows = (n + cols - 1) / cols;
+            SDL_Surface* cs = SDL_CreateRGBSurfaceWithFormat(
+                0, cols * cell, rows * cell, 32, SDL_PIXELFORMAT_ARGB8888);
             game::Canvas cc = game::Canvas::wrap(cs);
-            game::fillRect(cc, 0, 0, cs->w, cs->h, 0xff604060);
+            game::fillRect(cc, 0, 0, cs->w, cs->h, 0xff404040);
             game::BlitOptions copts;
             copts.colorKey = true;
             for (int i = 0; i < n; i++)
                 blitIndexed(cc, cur.frames[i].pixels.data(), cur.frames[i].width,
-                            cur.frames[i].height, i * 48, 0, pal, copts);
+                            cur.frames[i].height, (i % cols) * cell, (i / cols) * cell,
+                            pal, copts);
             if (SDL_SaveBMP(cs, cursorDump) != 0)
                 throw std::runtime_error(SDL_GetError());
-            std::printf("wrote %s (%zu cursor frames total)\n", cursorDump,
-                        cur.frames.size());
+            std::printf("wrote %s (%d cursor frames, %dx%d grid)\n", cursorDump, n,
+                        cols, rows);
             return 0;
         }
 

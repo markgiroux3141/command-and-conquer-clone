@@ -89,13 +89,14 @@ ShpD2File ShpD2File::load(const std::string& path) {
             p += n;
             dataLeft -= n;
         } else {
+            // Identity. NOTE: Dune II's loader remaps indices 1-4 to the shadow
+            // range (0x7f-0x7c) here, but C&C's mouse.shp — the only consumer of
+            // this decoder — uses 1-4 as literal palette colors (the green of the
+            // move/deploy cursors lives at indices 3/4). Remapping them turned
+            // those cursors red, so we keep the identity table.
             table.resize(256);
             for (int j = 0; j < 256; j++)
                 table[j] = uint8_t(j);
-            table[1] = 0x7f;
-            table[2] = 0x7e;
-            table[3] = 0x7d;
-            table[4] = 0x7c;
         }
 
         if (p + dataLeft > data.size())

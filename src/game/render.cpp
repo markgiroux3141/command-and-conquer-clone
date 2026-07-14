@@ -87,6 +87,14 @@ void drawRect(Canvas& c, int dx, int dy, int w, int h, uint32_t argb) {
     fillRect(c, dx + w - 1, dy, 1, h, argb);
 }
 
+// Scale an ARGB color's RGB channels by num/den (alpha forced opaque).
+static inline uint32_t shade(uint32_t argb, int num, int den) {
+    uint32_t r = ((argb >> 16) & 0xff) * num / den;
+    uint32_t g = ((argb >> 8) & 0xff) * num / den;
+    uint32_t b = (argb & 0xff) * num / den;
+    return 0xff000000 | (r << 16) | (g << 8) | b;
+}
+
 int drawText(Canvas& c, const fmt::FntFile& font, const std::string& text, int x,
              int y, uint32_t argb, int spacing) {
     int cx = x;
@@ -101,12 +109,19 @@ int drawText(Canvas& c, const fmt::FntFile& font, const std::string& text, int x
             if (ty < 0 || ty >= c.h)
                 continue;
             for (int gx = 0; gx < g->width; gx++) {
-                if (g->pixels[gy * g->width + gx] == 0)
+                // The glyph is 4-tone (a beveled/shaded letter): 0 transparent,
+                // 1 the bright stroke, 2 the mid body, 3 the dark outline.
+                // Rendering all three as one solid color fattens the outline
+                // into the fill and letters read bloated/smushed — so keep the
+                // shading by darkening 2 and 3 relative to the requested color.
+                uint8_t v = g->pixels[gy * g->width + gx];
+                if (v == 0)
                     continue; // transparent
                 int tx = cx + gx;
                 if (tx < 0 || tx >= c.w)
                     continue;
-                c.px[ty * c.pitch + tx] = argb;
+                c.px[ty * c.pitch + tx] =
+                    v == 1 ? argb : v == 2 ? shade(argb, 2, 3) : shade(argb, 1, 3);
             }
         }
         cx += g->width + spacing;

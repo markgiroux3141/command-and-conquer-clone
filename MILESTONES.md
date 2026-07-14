@@ -286,6 +286,13 @@ divergences are the work.
       water stop at the shore (clamp to nearest land), cross-map land paths
       still work. (Gunboat still immobile — naval needs a contiguous water
       region; its start cell sits in a tiny inlet. Pre-existing, not regressed.)
+- [x] **HUD polish + native-res render + original controls** (2026-07-14,
+      session 10): fixed-internal-resolution render pipeline (adjustable, native
+      zoom in fullscreen), DPI-correct mouse mapping, 4-tone FNT shading (crisp
+      text), sidebar hover tooltips, "new construction options" EVA, contextual
+      `mouse.shp` cursors, tight infantry selection boxes + health bars, the
+      original left-click-command / right-click-deselect scheme, sidebar
+      show/hide, and true-window-edge scrolling. See the session-10 log below.
 - [ ] Polish/known gaps (not blocking play):
       - TD tiberium overlay draws frame 0 only (no density/adjacency frames);
         harvest uses a flat BailCount.
@@ -293,9 +300,10 @@ divergences are the work.
         types (aircraft, gunboat, more structures) as needed.
       - TD production build-chain not yet play-tested (sidebar populates; sim
         production is the shared RA path).
-      - TD `mouse.shp` isn't ShpD2 format → OS cursor fallback. Structures show
-        little house color (TD art is mostly pre-colored; only the 176-191 band
-        remaps — expected).
+      - Structures show little house color (TD art is mostly pre-colored; only
+        the 176-191 band remaps — expected).
+      - RA `mouse.shp` uses a different 222-frame layout, so contextual cursors
+        are TD-only for now; RA falls back to the plain arrow (frame 0).
       - mapview still uses `root/CONQUER` only (no covert_ops icon fallback);
         fine since it doesn't draw cameos.
 
@@ -424,6 +432,37 @@ carries the delta. Update this file's checkboxes *before* writing a handoff.
   verified-by-construction (share the tested `drawText`, no headless trigger).
   Remaining UI polish: functional sell/repair, real radar shroud, cameo name
   tooltips.
+- **2026-07-14 (session 10): native-res render, original controls, HUD polish.**
+  A big feedback-driven pass, all in `game_main.cpp` unless noted. (1) **Render
+  pipeline** rebuilt: the whole HUD draws into an offscreen frame at a *fixed
+  internal resolution* (height preset, width follows display aspect), presented
+  via `SDL_Renderer`/texture into a hand-computed letterbox rect — so the zoom is
+  consistent windowed or fullscreen (fullscreen scales the native ~640×360 frame
+  up, matching the original's field of view). `+`/`-` cycle 5 resolution presets
+  (360→900), default 360 = native. (2) **DPI-correct mouse**: `toLogical` maps
+  window→logical by measuring the output/window pixel ratio each call (SDL's
+  `RenderWindowToLogical` mis-scales under OS display scaling — clicks landed
+  up-left). (3) **Crisp text**: FNT glyphs are 4-tone (1=stroke, 2=body,
+  3=outline); `drawText` (render.cpp) now shades 2/3 darker instead of painting
+  all as one solid color, which had fattened every letter ("bloated/smushed").
+  (4) **Sidebar hover tooltip** (name + `$cost`, `displayName` table) replaces
+  the per-cell price. (5) **"New construction options" EVA** (`newopt1`) when the
+  buildable set grows. (6) **Contextual cursors**: TD `mouse.shp` loads (it *is*
+  ShpD2 — the bug was the path: it lives in `INSTALL/CCLOCAL`, not CONQUER); frame
+  map taken verbatim from `MOUSE.CPP MouseControl[]`; the green move/deploy
+  cursors were red because the ShpD2 decoder applied Dune II's shadow remap to
+  indices 1-4 (real colors in C&C) — removed (shpd2.cpp). Cursor picks
+  arrow/scroll(×8)/move/no-move/attack/deploy/sell/repair/select by context, at
+  the right hotspot, animated. (7) **Selection UI**: infantry get a tight 14×20
+  box (their 50×39 frames are mostly pad) + a health bar; removed the `100%`
+  text. (8) **Original control scheme** (confirmed from `DISPLAY.CPP`
+  `TacticalClass::Action`): **left-click commands** (select/move/attack/deploy —
+  matches the cursor), **right-click deselects/cancels**. (9) **Sidebar show/hide**
+  via the SIDEBAR tab (slide anim + `bleep2`). (10) **Edge-scroll** fixed to fire
+  at true window edges (was gated to the tactical viewport, so the tab-bar/sidebar
+  edges were dead). Builds clean; verified headlessly via `--ui-shot`, cursor grid
+  dump, and `game --select --dump` (new debug flag). Interactive bits (left-click
+  commands, sidebar slide, edge-scroll, fullscreen zoom) confirmed by the user.
 - **2026-07-14 (session 9): HUD wiring + fullscreen + power/radar.** Made the
   HUD interactive and added display/system features. (1) **Fullscreen + dynamic
   layout**: window is resizable, F11/Alt+Enter toggles borderless fullscreen,
