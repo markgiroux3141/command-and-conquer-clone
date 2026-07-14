@@ -640,12 +640,6 @@ int runMainMenu(Shell& shell, const std::vector<Mission>& missions,
     int scroll = 0;
     int result = -2; // -2 = keep running, -1 = quit, >=0 = start mission
     while (result == -2) {
-        int mx = 0, my = 0;
-        {
-            int wx = 0, wy = 0;
-            SDL_GetMouseState(&wx, &wy);
-            mcv.toLogical(wx, wy, mx, my);
-        }
         game::Canvas c = mcv.begin();
         int lw = mcv.w(), lh = mcv.h();
 
@@ -655,9 +649,29 @@ int runMainMenu(Shell& shell, const std::vector<Mission>& missions,
         int maxScroll = std::max(0, int(missions.size()) - visRows);
         scroll = std::clamp(scroll, 0, maxScroll);
 
-        SDL_Rect newRect{}, quitRect{};
+        // Compute hit-rects BEFORE polling events (the click handler and the
+        // draw pass below both use them). rows outside the visible window keep a
+        // zero rect, which ptInRect never matches.
+        SDL_Rect newRect{listX, btnBot, 108, btnH};
+        SDL_Rect quitRect{listX + 124, btnBot, 108, btnH};
         std::vector<SDL_Rect> rowRects(missions.size());
+        for (int vi = 0; vi < visRows; vi++) {
+            int i = scroll + vi;
+            if (i >= int(missions.size()))
+                break;
+            rowRects[i] = SDL_Rect{listX, listTop + vi * rowH, listW, rowH - 2};
+        }
+
+        int mx = 0, my = 0;
+        {
+            int wx = 0, wy = 0;
+            SDL_GetMouseState(&wx, &wy);
+            mcv.toLogical(wx, wy, mx, my);
+        }
         int hoverRow = -1;
+        for (int i = 0; i < int(rowRects.size()); i++)
+            if (ptInRect(rowRects[i], mx, my))
+                hoverRow = i;
 
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
@@ -701,13 +715,10 @@ int runMainMenu(Shell& shell, const std::vector<Mission>& missions,
             int i = scroll + vi;
             if (i >= int(missions.size()))
                 break;
-            SDL_Rect r{listX, listTop + vi * rowH, listW, rowH - 2};
-            rowRects[i] = r;
-            bool hov = ptInRect(r, mx, my);
-            if (hov) {
-                hoverRow = i;
+            const SDL_Rect& r = rowRects[i];
+            bool hov = i == hoverRow;
+            if (hov)
                 game::fillRect(c, r.x, r.y, r.w, r.h, 0xff2a3a2a);
-            }
             drawTextCentered(c, font, missions[i].name, r.x, r.w, r.y + 2,
                              hov ? kGreen : kText);
         }
@@ -732,10 +743,11 @@ int runMainMenu(Shell& shell, const std::vector<Mission>& missions,
             }
         }
 
-        // Buttons.
-        newRect = menuButton(c, font, "NEW GAME", listX, btnBot, 108, btnH, mx, my,
-                             !missions.empty());
-        quitRect = menuButton(c, font, "QUIT", listX + 124, btnBot, 108, btnH, mx, my);
+        // Buttons (rects already fixed above; menuButton just draws them).
+        menuButton(c, font, "NEW GAME", newRect.x, newRect.y, newRect.w, newRect.h,
+                   mx, my, !missions.empty());
+        menuButton(c, font, "QUIT", quitRect.x, quitRect.y, quitRect.w, quitRect.h,
+                   mx, my);
 
         mcv.present();
         SDL_Delay(12);
@@ -756,19 +768,29 @@ PostChoice runPostMission(Shell& shell, Outcome outcome, bool hasNext,
     PostChoice result = PostChoice::Menu;
     bool decided = false;
     while (!decided) {
+        game::Canvas c = mcv.begin();
+        int lw = mcv.w(), lh = mcv.h();
+
+        // Fix the button rects BEFORE polling events (the click handler and the
+        // draw pass both use them). Only the buttons that exist get a live rect.
+        int bw = 168, bh = 24, gap = 10;
+        int bx = (lw - bw) / 2;
+        int by = lh / 2 - 10;
+        SDL_Rect nextRect{}, restartRect{}, menuRect{};
+        if (won && hasNext) {
+            nextRect = SDL_Rect{bx, by, bw, bh};
+            by += bh + gap;
+        }
+        restartRect = SDL_Rect{bx, by, bw, bh};
+        by += bh + gap;
+        menuRect = SDL_Rect{bx, by, bw, bh};
+
         int mx = 0, my = 0;
         {
             int wx = 0, wy = 0;
             SDL_GetMouseState(&wx, &wy);
             mcv.toLogical(wx, wy, mx, my);
         }
-        game::Canvas c = mcv.begin();
-        int lw = mcv.w(), lh = mcv.h();
-
-        int bw = 168, bh = 24, gap = 10;
-        int bx = (lw - bw) / 2;
-        int by = lh / 2 - 10;
-        SDL_Rect nextRect{}, restartRect{}, menuRect{};
 
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
@@ -807,13 +829,13 @@ PostChoice runPostMission(Shell& shell, Outcome outcome, bool hasNext,
         drawTextCentered(c, font, title, 0, lw, lh / 2 - 64, tcol);
         drawTextCentered(c, font, current.name, 0, lw, lh / 2 - 46, kText);
 
-        if (won && hasNext) {
-            nextRect = menuButton(c, font, "NEXT MISSION", bx, by, bw, bh, mx, my);
-            by += bh + gap;
-        }
-        restartRect = menuButton(c, font, "RESTART MISSION", bx, by, bw, bh, mx, my);
-        by += bh + gap;
-        menuRect = menuButton(c, font, "RETURN TO MENU", bx, by, bw, bh, mx, my);
+        if (won && hasNext)
+            menuButton(c, font, "NEXT MISSION", nextRect.x, nextRect.y, nextRect.w,
+                       nextRect.h, mx, my);
+        menuButton(c, font, "RESTART MISSION", restartRect.x, restartRect.y,
+                   restartRect.w, restartRect.h, mx, my);
+        menuButton(c, font, "RETURN TO MENU", menuRect.x, menuRect.y, menuRect.w,
+                   menuRect.h, mx, my);
 
         mcv.present();
         SDL_Delay(12);
