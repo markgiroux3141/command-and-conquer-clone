@@ -16,6 +16,10 @@ struct Canvas {
     uint32_t* px = nullptr;
     int pitch = 0; // in pixels, not bytes
     int w = 0, h = 0;
+    // Optional vertical clip band: writes are restricted to rows
+    // [clipY0, clipY1). Defaults span everything. Used to keep the scrolling
+    // sidebar cameo strip from spilling over the radar/buttons above it.
+    int clipY0 = 0, clipY1 = 1 << 30;
 
     static Canvas wrap(SDL_Surface* surf);
 };

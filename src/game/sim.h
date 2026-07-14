@@ -204,6 +204,10 @@ public:
     // All Prerequisite= structures present? (barr and tent count as each
     // other, like the original's shared BARRACKS flag.)
     bool prereqsMet(const std::string& house, const std::string& prereq) const;
+    // A single cell: in-bounds, unblocked, unoccupied, buildable terrain.
+    // Used by the placement cursor to shade each footprint cell (the original
+    // draws TRANS.ICN frame 0 on clear cells, frame 2 on blocked ones).
+    bool cellBuildable(int cell) const;
     // Every footprint cell buildable + free, and touching (Chebyshev 1) a
     // friendly structure.
     bool canPlace(const std::string& house, int cell, int w, int h) const;

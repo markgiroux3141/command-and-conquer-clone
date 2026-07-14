@@ -574,6 +574,14 @@ void Sim::cancelProduction(const std::string& house, ProdCat cat) {
     p = Production{};
 }
 
+bool Sim::cellBuildable(int cell) const {
+    int cx = cell % kSize, cy = cell / kSize;
+    if (cx < 0 || cy < 0 || cx >= kSize || cy >= kSize)
+        return false;
+    return !blocked_[cell] && occupant_[cell] == -1 &&
+           rules_->landBuildable(land_[cell]);
+}
+
 bool Sim::canPlace(const std::string& house, int cell, int w, int h) const {
     int cx = cell % kSize, cy = cell / kSize;
     if (cx < 0 || cy < 0 || cx + w > kSize || cy + h > kSize)

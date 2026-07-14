@@ -17,7 +17,7 @@ void blitIndexed(Canvas& c, const uint8_t* src, int sw, int sh, int dx, int dy,
                  const fmt::Palette& pal, const BlitOptions& opts) {
     for (int y = 0; y < sh; y++) {
         int ty = dy + y;
-        if (ty < 0 || ty >= c.h)
+        if (ty < 0 || ty >= c.h || ty < c.clipY0 || ty >= c.clipY1)
             continue;
         for (int x = 0; x < sw; x++) {
             int tx = dx + x;
@@ -49,7 +49,7 @@ void blitIndexedScaled(Canvas& c, const uint8_t* src, int sw, int sh, int dx,
         return;
     for (int y = 0; y < dh; y++) {
         int ty = dy + y;
-        if (ty < 0 || ty >= c.h)
+        if (ty < 0 || ty >= c.h || ty < c.clipY0 || ty >= c.clipY1)
             continue;
         int sy = y * sh / dh;
         for (int x = 0; x < dw; x++) {
@@ -70,7 +70,7 @@ void blitIndexedScaled(Canvas& c, const uint8_t* src, int sw, int sh, int dx,
 
 void fillRect(Canvas& c, int dx, int dy, int w, int h, uint32_t argb) {
     for (int y = dy; y < dy + h; y++) {
-        if (y < 0 || y >= c.h)
+        if (y < 0 || y >= c.h || y < c.clipY0 || y >= c.clipY1)
             continue;
         for (int x = dx; x < dx + w; x++) {
             if (x < 0 || x >= c.w)
@@ -106,7 +106,7 @@ int drawText(Canvas& c, const fmt::FntFile& font, const std::string& text, int x
         }
         for (int gy = 0; gy < g->height; gy++) {
             int ty = y + g->yOffset + gy;
-            if (ty < 0 || ty >= c.h)
+            if (ty < 0 || ty >= c.h || ty < c.clipY0 || ty >= c.clipY1)
                 continue;
             for (int gx = 0; gx < g->width; gx++) {
                 // The glyph is 4-tone (a beveled/shaded letter): 0 transparent,

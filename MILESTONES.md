@@ -293,6 +293,26 @@ divergences are the work.
       `mouse.shp` cursors, tight infantry selection boxes + health bars, the
       original left-click-command / right-click-deselect scheme, sidebar
       show/hide, and true-window-edge scrolling. See the session-10 log below.
+- [x] **Gameplay/HUD polish** (2026-07-14, session 11, all in `game_main.cpp`
+      unless noted): sidebar build **clock** — a radial translucent-grey pie
+      sweeping clockwise, replacing the flat progress bar (mirrors CLOCK.SHP) —
+      plus green **"READY"** text on finished cameos. Placement cursor is now the
+      original per-cell **diagonal hatch** (white = buildable / red = blocked, via
+      new `Sim::cellBuildable`) instead of colored rectangles. **Infantry walk &
+      fire animations**: ported the original DoControls frame layout (STAND
+      {0,1,1} / WALK {16,6,6} / FIRE {64,N,N}; N per weapon; civilians use the
+      frame-56 walk) — infantry were stuck on the 8 stand frames before; the fire
+      cycle is **driven by the weapon cooldown** so the muzzle animation lands on
+      the actual shot/sound (was a free-running clock ⇒ ~2× too fast). Placement
+      label uses `displayName` (was the raw type code, e.g. "NUKE"). **Select
+      cursor** now shows over a friendly unit/structure (What_Action ⇒
+      ACTION_SELECT), not the move cursor. **Per-column independent sidebar
+      scroll** + a per-column up/down arrow pair (was one shared pair). Cameo
+      strip **clipped to its band** (new `Canvas::clipY0/clipY1` in render.{h,cpp})
+      so a scrolled column can't spill over the radar/buttons. Credits readout
+      **anchored** to a fixed x so sliding the sidebar out doesn't push it into
+      the SIDEBAR tab. Right **edge-scroll** fires at the play-view edge (`viewW`)
+      not the window edge. Verified via `--ui-shot` + frame-index probes.
 - [ ] Polish/known gaps (not blocking play):
       - TD tiberium overlay draws frame 0 only (no density/adjacency frames);
         harvest uses a flat BailCount.
@@ -337,6 +357,19 @@ carries the delta. Update this file's checkboxes *before* writing a handoff.
 
 ### Session log
 
+- **2026-07-14 (session 11): gameplay/HUD polish (feedback-driven).** No new
+  phase — a batch of fixes on the TD shell, each confirmed by the user (see the
+  Phase 10 checklist bullet for the full list). Highlights: sidebar build
+  **clock** (radial pie) + **READY** text; original per-cell **placement hatch**
+  (`Sim::cellBuildable`); **infantry walk/fire animations** (ported DoControls
+  frame layout — they were static before) with the **fire cycle synced to the
+  weapon cooldown/sound**; `displayName` on the placement label; **select cursor**
+  over friendly units; **per-column** sidebar scroll + arrows; cameo strip
+  **clipped** to its band (new `Canvas::clipY0/clipY1`); **anchored credits**
+  text; right **edge-scroll at `viewW`**. Built clean; verified via `--ui-shot`
+  and temporary frame-index/cooldown probes (all removed). Sim untouched —
+  headless determinism preserved. **Next: Phase 7 (AI & missions)** — see
+  `HANDOFF.md` for the starting plan.
 - **2026-07-06 (session 1):** Phase 0 complete. Phase 1 complete (PAL, SHP,
   INI, TMP, AUD + shpview/tmpview/iniquery/auddump tools, all verified).
   Context ~70% at end of session; next session starts Phase 2 (map rendering).

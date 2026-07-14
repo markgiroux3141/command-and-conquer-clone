@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -818,6 +819,21 @@ int main(int argc, char** argv) {
             sim.addUnit(std::move(su), inf.cell);
         }
 
+        // Infantry SHP frame layout, mirroring the original's per-type
+        // DoControls (IDATA.CPP). Each maneuver occupies `cycle` frames per
+        // facing, starting at `frame`; the running frame is
+        // `frame + facing*cycle + (stage % cycle)`. cycle 0 = no such art.
+        struct InfAnim { int walkFrame, walkCycle, fireFrame, fireCycle; };
+        auto infAnim = [](const std::string& t) -> InfAnim {
+            if (!t.empty() && t[0] == 'c')            // civilians (share c1 art)
+                return {56, 6, 205, 4};
+            if (t == "e2") return {16, 6, 64, 20};    // grenadier
+            if (t == "e4" || t == "e5") return {16, 6, 64, 16}; // flame / chem
+            if (t == "rmbo") return {16, 6, 64, 4};   // commando
+            if (t == "e6") return {16, 6, 0, 0};      // engineer: walk only
+            if (t == "e1" || t == "e3") return {16, 6, 64, 8}; // minigun / rocket
+            return {0, 0, 0, 0};                       // unknown → stand only
+        };
         // Resolve a sim unit to its drawable for the current frame.
         auto unitDrawObject = [&](const game::Sim::Unit& u) -> std::optional<DrawObject> {
             const fmt::ShpFile* shp = art.shp(u.type);
@@ -829,7 +845,31 @@ int main(int argc, char** argv) {
             DrawObject o;
             o.shp = shp;
             if (u.infantry) {
-                o.frame = (8 - ((u.facing & 0xff) >> 5)) & 7;
+                // Facing → one of 8 stand poses (matches the original's
+                // HumanShape[] mapping at the cardinal directions).
+                int face = (8 - ((u.facing & 0xff) >> 5)) & 7;
+                int nframes = int(shp->frames.size());
+                InfAnim a = infAnim(u.type);
+                if (u.moving() && a.walkCycle > 0 &&
+                    nframes > a.walkFrame + face * a.walkCycle + a.walkCycle - 1) {
+                    // Walk cycle; per-unit phase offset so they aren't lockstep.
+                    int stage = int((SDL_GetTicks() / 90 + unsigned(u.id)) % a.walkCycle);
+                    o.frame = a.walkFrame + face * a.walkCycle + stage;
+                } else if (u.hasTarget() && a.fireCycle > 0 &&
+                           nframes > a.fireFrame + face * a.fireCycle + a.fireCycle - 1) {
+                    // Play one fire cycle per shot, driven by the weapon
+                    // cooldown so the muzzle animation lands on the actual shot
+                    // (and its sound). cooldown resets to `rof` at each shot, so
+                    // `elapsed` counts ticks since firing; once the cycle is
+                    // done we hold the ready pose until the next shot.
+                    int rof = u.stats.primary ? u.stats.primary->rof : a.fireCycle;
+                    int elapsed = std::max(0, rof - u.cooldown);
+                    o.frame = elapsed < a.fireCycle
+                                  ? a.fireFrame + face * a.fireCycle + elapsed
+                                  : face;
+                } else {
+                    o.frame = face; // stand-ready
+                }
             } else {
                 o.frame = game::facingToFrame(u.facing) % int(shp->frames.size());
                 if (u.turreted && shp->frames.size() >= 64)
@@ -1258,25 +1298,31 @@ int main(int argc, char** argv) {
         // Build sidebar show/hide (SIDEBAR tab); `slide` animates 1→0 as it
         // retracts off the right edge and the tactical view widens to fill.
         bool sidebarOn = true;
-        float slide = 1.0f;
+        float slide = sidebarOn ? 1.0f : 0.0f;
         uint32_t slidePrev = SDL_GetTicks();
         SDL_Rect sidebarTabRect{}; // "SIDEBAR" tab hitbox (recomputed each frame)
 
         // ---- Sidebar layout + placement mode state ----
         std::string placingType; // building awaiting placement (ghost follows mouse)
         int placeW = 0, placeH = 0;
-        int sideScroll = 0;
+        int sideScroll[2] = {0, 0}; // per-column scroll (structures | units)
         // Sidebar action mode: click a friendly structure to sell/repair it.
         enum class SideMode { None, Repair, Sell } sideMode = SideMode::None;
         SDL_Rect btnRect[3] = {}; // REPAIR / SELL / MAP hitboxes (recomputed/frame)
-        SDL_Rect arrowUp{}, arrowDn{}; // sidebar scroll arrows (recomputed/frame)
+        // Per-column scroll arrows (each column scrolls independently, like the
+        // original's Column[] StripClass). [col] = up/down for that column.
+        SDL_Rect arrowUp[2]{}, arrowDn[2]{};
         // Cameos actually on the sidebar: the candidates whose prerequisites are
         // met right now (rebuilt each frame, like the original's StripClass).
         // Pointers into the stable buildStructs/buildUnits candidate lists.
         std::vector<const BuildEntry*> visStructs, visUnits;
         auto entryPos = [&](int col, int idx, int& x, int& y) {
             x = viewW + kSideColX + col * (kCameoW + 4);
-            y = kSideTop + idx * (kCameoH + 4) - sideScroll;
+            y = kSideTop + idx * (kCameoH + 4) - sideScroll[col];
+        };
+        // Rows that overflow the visible strip for a given column's list size.
+        auto maxScrollFor = [&](int count) {
+            return std::max(0, kSideTop + count * (kCameoH + 4) + 4 - (winH - 26));
         };
         // Cameo under the mouse; null if none.
         auto sidebarHit = [&](int hx, int hy) -> const BuildEntry* {
@@ -1286,7 +1332,7 @@ int main(int argc, char** argv) {
             if (col > 1 || hx >= viewW + kSideColX + col * (kCameoW + 4) + kCameoW)
                 return nullptr;
             const auto& list = col == 0 ? visStructs : visUnits;
-            int idx = (hy - kSideTop + sideScroll) / (kCameoH + 4);
+            int idx = (hy - kSideTop + sideScroll[col]) / (kCameoH + 4);
             if (idx < 0 || idx >= int(list.size()))
                 return nullptr;
             int ex, ey;
@@ -1381,10 +1427,15 @@ int main(int argc, char** argv) {
                     bx += bw[b] + gap;
                 }
             }
-            // Sidebar scroll arrows sit in a strip at the bottom-right.
+            // Each column gets its own up/down arrow pair at its bottom (the
+            // original's per-column scroll buttons), so the two strips scroll
+            // independently.
             int sideBot = winH - 26; // cameo columns stop above the arrow strip
-            arrowUp = SDL_Rect{viewW + kSidebarW - 4 - 64, sideBot + 1, 32, 24};
-            arrowDn = SDL_Rect{viewW + kSidebarW - 4 - 32, sideBot + 1, 32, 24};
+            for (int col = 0; col < 2; col++) {
+                int ex = viewW + kSideColX + col * (kCameoW + 4);
+                arrowUp[col] = SDL_Rect{ex, sideBot + 1, 32, 24};
+                arrowDn[col] = SDL_Rect{ex + 32, sideBot + 1, 32, 24};
+            }
             // "SIDEBAR" tab hitbox (top-right); clicking it shows/hides the sidebar.
             {
                 int wSide = (hudFont ? game::textWidth(*hudFont, "SIDEBAR") : 40) + 10;
@@ -1450,11 +1501,15 @@ int main(int argc, char** argv) {
                     else if (s == SDLK_MINUS || s == SDLK_KP_MINUS)
                         resIndex = std::min(n - 1, resIndex + 1);
                 }
-                int rows = int(std::max(visStructs.size(), visUnits.size()));
-                int maxScroll = std::max(0, kSideTop + rows * (kCameoH + 4) + 4 - sideBot);
-                if (e.type == SDL_MOUSEWHEEL && mx >= viewW)
-                    sideScroll = std::clamp(sideScroll - e.wheel.y * (kCameoH + 4),
-                                            0, maxScroll);
+                int maxScroll0 = maxScrollFor(int(visStructs.size()));
+                int maxScroll1 = maxScrollFor(int(visUnits.size()));
+                if (e.type == SDL_MOUSEWHEEL && mx >= viewW) {
+                    // Scroll whichever column the pointer is over.
+                    int col = mx >= viewW + kSideColX + (kCameoW + 4) ? 1 : 0;
+                    int mxs = col == 0 ? maxScroll0 : maxScroll1;
+                    sideScroll[col] = std::clamp(
+                        sideScroll[col] - e.wheel.y * (kCameoH + 4), 0, mxs);
+                }
                 if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
                     // REPAIR / SELL / MAP buttons take priority over everything.
                     int hitBtn = -1;
@@ -1479,10 +1534,14 @@ int main(int argc, char** argv) {
                                                              : SideMode::Sell;
                     else if (hitBtn == 2)
                         ; // MAP: radar toggle stub
-                    else if (inRect(arrowUp))
-                        sideScroll = std::clamp(sideScroll - (kCameoH + 4), 0, maxScroll);
-                    else if (inRect(arrowDn))
-                        sideScroll = std::clamp(sideScroll + (kCameoH + 4), 0, maxScroll);
+                    else if (inRect(arrowUp[0]))
+                        sideScroll[0] = std::clamp(sideScroll[0] - (kCameoH + 4), 0, maxScroll0);
+                    else if (inRect(arrowDn[0]))
+                        sideScroll[0] = std::clamp(sideScroll[0] + (kCameoH + 4), 0, maxScroll0);
+                    else if (inRect(arrowUp[1]))
+                        sideScroll[1] = std::clamp(sideScroll[1] - (kCameoH + 4), 0, maxScroll1);
+                    else if (inRect(arrowDn[1]))
+                        sideScroll[1] = std::clamp(sideScroll[1] + (kCameoH + 4), 0, maxScroll1);
                     else if (sideMode != SideMode::None && e.button.x < viewW) {
                         // Repair/Sell the friendly structure under the cursor.
                         int cellX = cx0 + (e.button.x + int(camX)) / kTile;
@@ -1740,14 +1799,16 @@ int main(int argc, char** argv) {
 
             const Uint8* keys = SDL_GetKeyboardState(nullptr);
             float dx = 0, dy = 0;
-            // Screen-edge scroll fires at the true window edges — like the
-            // original, it works even when the cursor is over the sidebar or tab
-            // bar (which sit on the top/right screen edges). Arrow keys / WASD too.
+            // Screen-edge scroll. The right edge fires at the play view's right
+            // border (viewW) — where the tactical map ends — so you don't have
+            // to reach past the sidebar; it keeps scrolling while over the
+            // sidebar too. Top/bottom/left use the window edges. Arrow keys /
+            // WASD also scroll.
             bool onFrame = mx >= 0 && mx < winW && my >= 0 && my < winH;
             if (keys[SDL_SCANCODE_A] || keys[SDL_SCANCODE_LEFT] || (onFrame && mx < kEdge))
                 dx -= 1;
             if (keys[SDL_SCANCODE_D] || keys[SDL_SCANCODE_RIGHT] ||
-                (onFrame && mx >= winW - kEdge))
+                (onFrame && mx >= viewW - kEdge))
                 dx += 1;
             if (keys[SDL_SCANCODE_W] || keys[SDL_SCANCODE_UP] || (onFrame && my < kEdge))
                 dy -= 1;
@@ -1786,26 +1847,36 @@ int main(int argc, char** argv) {
             drawEffects(wc, int(camX), int(camY));
             drawShroud(wc, int(camX), int(camY));
 
-            // Placement ghost: footprint outline at the cursor cell.
+            // Placement ghost: a diagonal hash-mark cursor over each footprint
+            // cell (the original's TRANS.ICN stamp). Clear cells hatch white,
+            // blocked cells hatch red; the pattern is keyed to absolute screen
+            // coords so the lines stay continuous across the footprint.
             if (!placingType.empty() && mx < viewW) {
                 int cellX = cx0 + (mx + int(camX)) / kTile;
                 int cellY = cy0 + (my + int(camY)) / kTile;
                 bool ok = sim.canPlace(playerHouse, cellY * kSize + cellX,
                                        placeW, placeH);
-                uint32_t col = ok ? 0xff00ff00 : 0xffff0000;
+                auto hatch = [&](int px, int py, uint32_t col) {
+                    for (int yy = std::max(0, py); yy < std::min(winH, py + kTile); yy++)
+                        for (int xx = std::max(0, px); xx < std::min(viewW, px + kTile); xx++)
+                            if (((xx + yy) & 3) == 0)
+                                wc.px[yy * wc.pitch + xx] = col;
+                };
                 for (int by = 0; by < placeH; by++)
-                    for (int bx = 0; bx < placeW; bx++)
-                        game::drawRect(wc,
-                                       (cellX + bx - cx0) * kTile - int(camX),
-                                       (cellY + by - cy0) * kTile - int(camY),
-                                       kTile, kTile, col);
+                    for (int bx = 0; bx < placeW; bx++) {
+                        int c = (cellY + by) * kSize + (cellX + bx);
+                        // A cell hatches white only when the whole footprint is
+                        // placeable AND this cell is clear; otherwise red.
+                        bool cellOk = ok && sim.cellBuildable(c);
+                        hatch((cellX + bx - cx0) * kTile - int(camX),
+                              (cellY + by - cy0) * kTile - int(camY),
+                              cellOk ? 0xffffffff : 0xffff3030);
+                    }
                 // "<NAME> $<cost>" label following the cursor.
                 if (hudFont) {
-                    std::string lbl = placingType;
-                    for (auto& ch : lbl)
-                        ch = char(std::toupper((unsigned char)ch));
                     int cost = rules.unit(placingType, game::UnitKind::Structure).cost;
-                    lbl += " $" + std::to_string(cost);
+                    std::string lbl = displayName(placingType) +
+                                      " $" + std::to_string(cost);
                     game::drawText(wc, *hudFont, lbl, mx + 13, my + 1, 0xff000000);
                     game::drawText(wc, *hudFont, lbl, mx + 12, my, kText);
                 }
@@ -1902,7 +1973,8 @@ int main(int argc, char** argv) {
             // Halve a region's brightness (like the SHP shadow table) to mark
             // an available-but-unaffordable cameo.
             auto darken = [&](int x0, int y0, int w, int h) {
-                for (int yy = std::max(0, y0); yy < std::min(winH, y0 + h); yy++)
+                int y1 = std::min({winH, wc.clipY1, y0 + h});
+                for (int yy = std::max({0, wc.clipY0, y0}); yy < y1; yy++)
                     for (int xx = std::max(0, x0); xx < std::min(wc.w, x0 + w); xx++) {
                         uint32_t px = wc.px[yy * wc.pitch + xx];
                         wc.px[yy * wc.pitch + xx] = 0xff000000 | ((px >> 1) & 0x7f7f7f);
@@ -1929,15 +2001,45 @@ int main(int argc, char** argv) {
                     // Raised bezel around the filled slot.
                     game::drawRect(wc, ex - 1, ey - 1, kCameoW + 2, kCameoH + 2, kDark);
                     if (building) {
-                        game::fillRect(wc, ex, ey + kCameoH - 4,
-                                       kCameoW * p->frac256() / 256, 3, 0xffe8e800);
-                        if (p->ready)
+                        if (!p->ready) {
+                            // Construction clock: a translucent grey pie sweeps
+                            // clockwise from 12 o'clock, darkening the portion
+                            // still to build (the original's CLOCK.SHP overlay).
+                            float done = p->frac256() / 256.0f;
+                            float cxp = ex + kCameoW * 0.5f, cyp = ey + kCameoH * 0.5f;
+                            int yLo = std::max({ey, wc.clipY0, 0});
+                            int yHi = std::min({ey + kCameoH, wc.clipY1, winH});
+                            for (int yy = yLo; yy < yHi; yy++)
+                                for (int xx = ex; xx < ex + kCameoW; xx++) {
+                                    float ang = std::atan2(xx - cxp, cyp - yy); // 0=up, cw
+                                    if (ang < 0) ang += 6.2831853f;
+                                    if (ang / 6.2831853f < done)
+                                        continue; // already built — leave bright
+                                    uint32_t px = wc.px[yy * wc.pitch + xx];
+                                    wc.px[yy * wc.pitch + xx] =
+                                        0xff000000 | (((px >> 1) & 0x7f7f7f) + 0x181818);
+                                }
+                        } else {
                             game::drawRect(wc, ex, ey, kCameoW, kCameoH,
                                            placingType.empty() ? 0xff00ff00
                                                                : 0xffffffff);
+                            // "READY" across the cameo once it's built (the
+                            // original's PIP_READY overlay).
+                            if (hudFont) {
+                                int ty = ey + (kCameoH - hudFont->maxHeight) / 2;
+                                drawTextCentered(wc, hudFont, "READY", ex + 1,
+                                                 kCameoW, ty + 1, 0xff000000, 0);
+                                drawTextCentered(wc, hudFont, "READY", ex,
+                                                 kCameoW, ty, kGreen, 0);
+                            }
+                        }
                     }
                 }
             };
+            // Clip cameo drawing to the strip band so a scrolled column can't
+            // spill up over the radar/buttons (or below into the arrow strip).
+            wc.clipY0 = kSideTop;
+            wc.clipY1 = sideBot;
             // Empty cameo slots: the original's metallic strip texture (real
             // DOS art, scaled 2x), so a sparse sidebar reads as a framed grid.
             const fmt::ShpFile* stripArt = art.shp("strip");
@@ -1953,24 +2055,31 @@ int main(int argc, char** argv) {
                 }
             drawStrip(visStructs, 0);
             drawStrip(visUnits, 1);
+            wc.clipY0 = 0;
+            wc.clipY1 = 1 << 30;
 
-            // Scroll arrows (real DOS art) — shown only when the strips overflow.
+            // Per-column scroll arrows (real DOS art) — each shown only when
+            // that column's strip overflows.
             {
-                int rows = int(std::max(visStructs.size(), visUnits.size()));
-                int maxScr = std::max(0, kSideTop + rows * (kCameoH + 4) + 4 - sideBot);
-                if (maxScr > 0) {
-                    auto arrow = [&](const char* name, const SDL_Rect& r, bool on) {
-                        const fmt::ShpFile* a = art.shp(name);
-                        if (a && !a->frames.empty()) {
-                            game::BlitOptions o;
-                            o.colorKey = true;
-                            blitIndexedScaled(wc, a->frames[0].data(), a->width,
-                                              a->height, r.x, r.y, r.w, r.h, pal, o);
-                        } else
-                            bevelPanel(wc, r.x, r.y, r.w, r.h, on ? kLight : kFace);
-                    };
-                    arrow("stripup", arrowUp, sideScroll > 0);
-                    arrow("stripdn", arrowDn, sideScroll < maxScr);
+                auto arrow = [&](const char* name, const SDL_Rect& r, bool on) {
+                    const fmt::ShpFile* a = art.shp(name);
+                    if (a && !a->frames.empty()) {
+                        game::BlitOptions o;
+                        o.colorKey = true;
+                        blitIndexedScaled(wc, a->frames[0].data(), a->width,
+                                          a->height, r.x, r.y, r.w, r.h, pal, o);
+                    } else
+                        bevelPanel(wc, r.x, r.y, r.w, r.h, on ? kLight : kFace);
+                };
+                int mx0 = maxScrollFor(int(visStructs.size()));
+                int mx1 = maxScrollFor(int(visUnits.size()));
+                if (mx0 > 0) {
+                    arrow("stripup", arrowUp[0], sideScroll[0] > 0);
+                    arrow("stripdn", arrowDn[0], sideScroll[0] < mx0);
+                }
+                if (mx1 > 0) {
+                    arrow("stripup", arrowUp[1], sideScroll[1] > 0);
+                    arrow("stripdn", arrowDn[1], sideScroll[1] < mx1);
                 }
             }
 
@@ -1988,7 +2097,10 @@ int main(int argc, char** argv) {
                 int produced = 0, drained = 0;
                 sim.power(playerHouse, produced, drained);
                 std::string cr = "$" + std::to_string(sim.credits(playerHouse));
-                int crRight = viewW - 6;
+                // Anchor to the open-sidebar edge (a fixed x) so the readout
+                // stays put — sliding the sidebar out must not push it right
+                // into the SIDEBAR tab text.
+                int crRight = winW - kSidebarW - 6;
                 drawTextRight(wc, hudFont, cr, crRight, tY, kGreen);
                 std::string pw = std::to_string(produced) + "/" + std::to_string(drained);
                 uint32_t pc = produced >= drained ? kText : 0xffff5050;
@@ -2091,6 +2203,11 @@ int main(int argc, char** argv) {
                             curCursor = Cursor::Attack;
                         else if (overOwnSelMcv)
                             curCursor = Cursor::Deploy;
+                        else if (ownSelectable)
+                            // Hovering a friendly unit/structure re-shows the
+                            // select cursor (the original's What_Action returns
+                            // ACTION_SELECT over an owned selectable object).
+                            curCursor = Cursor::Select;
                         else if (inGrid && sim.explored(cell) && sim.passable(cell, selCls))
                             curCursor = Cursor::CanMove;
                         else if (inGrid)
