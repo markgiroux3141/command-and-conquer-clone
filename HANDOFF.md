@@ -2,8 +2,14 @@
 
 Session 13 landed **Track A (Phase 8 game flow)**: a main menu + post-mission
 screen wrapping the shell in a game-state machine, so the game no longer freezes
-on the MISSION ACCOMPLISHED/FAILED banner. See the Phase 8 block + session-13 log
-in `MILESTONES.md` for the full detail.
+on the MISSION ACCOMPLISHED/FAILED banner. Two follow-up fixes rode along: the
+menu/post buttons weren't clickable (hit-rects built after event polling), and
+TD wall overlays now connect via neighbor adjacency. See the Phase 8 block +
+session-13 log in `MILESTONES.md` for the full detail.
+
+**The user's next priority is the AI (see "AI campaign fidelity gap" below)** —
+they noticed Nod obliterates them in GDI mission 1, and it's a real fidelity
+gap, not just tuning. It was deliberately deferred to a dedicated session.
 
 ## Read first
 
@@ -57,21 +63,59 @@ All in `src/game_main.cpp`:
   window/renderer/mixer/font/cursor setup, campaign discovery, the state machine,
   teardown.
 
-## Suggested next work (Track B — Phase 7 polish)
+## NEXT SESSION — AI campaign fidelity (the user's ask)
 
-Priority order from the user:
+**Problem the user hit:** in GDI mission 1 (scg01ea) Nod immediately rushes and
+obliterates them. Root cause is a fidelity gap, not difficulty tuning: **the
+original campaign enemy is scripted and restrained; our engine runs a full,
+always-on skirmish AI over the top of it.**
+
+What scg01ea actually scripts for Nod (`[Triggers]`/`[TeamTypes]`):
+- `ATK2 = Time,Create Team,0,BadGuy,NOD1` — spawn team NOD1 early, once.
+- `NOD1 = BadGuy,…,E1:2, 4, Move:0, Move:1, Move:2, Attack Units:6` — **2
+  minigunners** that walk waypoints 0→1→2 and only *then* attack. A patrol, not
+  a rush.
+- `ATK4 = Bldgs Destr.,Reinforce.,0,BadGuy,NOD3` → `NOD3 = …,BGGY:1, Attack
+  Units:5` — one buggy, and only after you start destroying Nod buildings.
+- Win/Lose are `All Destr.` triggers; there's a `[Base]` prebuilt list at the end.
+
+What our engine does wrong (all in `src/game_main.cpp` + `src/game/sim.cpp`):
+1. `main()`/shell enables `sim.setAI(h)` on **every** non-player combatant by
+   default and grants a **5000-credit stipend** (`--ai-credits`). So Nod
+   base-builds a whole army the mission never intended.
+2. `Create Team`/`Reinforce.` spawns the roster near the base and **folds it into
+   the generic "attack nearest enemy with everything" wave** — NOD1's
+   `Move→Move→Move→Attack` script is ignored (known gap; TeamType mission list is
+   parsed-past — see `map.h` TeamType comment and `sim.cpp` `spawnTeam`).
+
+Fixes, in impact order (this is the whole session):
+1. **Don't run the aggressive skirmish AI on trigger-scripted campaign houses.**
+   The original only base-builds when there's a `[Base]` list + a Production/
+   Autocreate trigger, and only attacks via *alerted* TeamTypes. Simplest first
+   cut: if the map has Win/Lose triggers (a scripted mission), *don't* auto-enable
+   `setAI` on scripted houses — let triggers/teams drive them. Keep the full
+   skirmish AI only for trigger-less skirmish maps. (Decision point: confirm this
+   gating with the user.)
+2. **Run coordinated TeamType missions** — drive spawned teams along their parsed
+   `Move:wpt / Attack / Guard / Guard Area / Loop` script (TEAM.CPP
+   `Coordinate_*`) instead of the generic wave. Needs the TeamType mission list
+   retained through `map.cpp` → `sim` (today `map.h TeamType` drops it; re-add a
+   `missions` vector and thread it into `spawnTeam`).
+3. **Difficulty tiers + AlertTime cadence + stipend** (Easy/Normal/Hard attack
+   intervals per §6), and gate base-building on `[Base]` (INI.CPP:441 / BASE.CPP).
+
+Reference: `docs/original-source/06-houses-ai-missions.md` §4 (TeamTypes/Teams,
+`Coordinate_*`), §6 (HouseClass::AI, alerted attack cadence), §7 (reinforcements).
+There is also a **user memory** `ai-campaign-fidelity-gap` capturing this.
+
+## Other Track B items (after the AI, or as the user directs)
+
 1. **Reinforcements at the map edge/shore via waypoints** (LST naval landing is
-   currently skipped; teams spawn mid-base). `Do_Reinforcements` REINF.CPP:63 —
-   enter from a waypoint / map edge and drive on. First pass: spawn at the
-   reinforcement waypoint + move onto the map.
-2. **Coordinated TeamType missions** (Move:wpt / Attack / Guard) instead of
-   folding spawned units into the generic AI wave. Retain the TeamType mission
-   list (parsed-past today; see `map.h` note) and drive teams along it
-   (TEAM.CPP `Coordinate_*`).
-3. **Broaden trigger coverage**: superweapons (Ion/Nuke/Airstrike), `Built It`,
+   skipped; teams spawn mid-base). `Do_Reinforcements` REINF.CPP:63 — enter from
+   a waypoint / map edge and drive on.
+2. **Broaden trigger coverage**: superweapons (Ion/Nuke/Airstrike), `Built It`,
    `Discovered`, `Credits`, cell triggers, trigger-chaining.
-4. **AI depth**: defensive structures (gun/gtwr/obli/sam), difficulty tiers,
-   building rebuild, per-map `[Base]` prebuilt list (INI.CPP:441 / BASE.CPP).
+3. **AI depth**: defensive structures (gun/gtwr/obli/sam), building rebuild.
 
 Later Phase 8: in-game OPTIONS menu (the tab is a stub), save/load; more EVA cues.
 
@@ -119,8 +163,11 @@ after `present()`) if you need to eyeball a menu change.
 
 ## Git / housekeeping
 
-- **Session-13 Track A work is committed & pushed to `main`** (game-flow state
-  machine in `game_main.cpp`, MILESTONES/HANDOFF updates).
+- **All session-13 work is committed & pushed to `main`** — three commits:
+  (1) Phase 8 game-flow state machine, (2) fix unclickable menu/post hit-rects,
+  (3) TD wall neighbor-adjacency frames. Plus MILESTONES/HANDOFF doc updates.
+- The AI fidelity gap was **deferred** (no code change) — captured here + in the
+  `ai-campaign-fidelity-gap` user memory. Working tree is clean at handoff.
 - `docs/REFACTOR_PLAN.md` is untracked (predates this session) — left for the
   user to commit if wanted; it documents a *future* decomposition pass and is
   unrelated to this work.
