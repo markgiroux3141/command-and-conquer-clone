@@ -1249,6 +1249,20 @@ static Outcome runScenario(int argc, char** argv, const std::string& mapPath,
                 addBuildable(t, game::UnitKind::Vehicle);
         }
 
+        // Map an INI per-unit mission to the sim's standing order. Most orders
+        // (Guard/Sticky/Sleep/Harvest/...) reduce to "hold + return fire", which
+        // is the sim's Guard default; only Hunt and Area Guard are distinct.
+        auto orderFor = [](const std::string& mission, int cell,
+                           game::Sim::Unit& su) {
+            if (mission == "Hunt" || mission == "Attack Base" ||
+                mission == "Attack Units" || mission == "Rampage")
+                su.order = game::Sim::Unit::Order::Hunt;
+            else if (mission == "Area Guard") {
+                su.order = game::Sim::Unit::Order::AreaGuard;
+                su.orderCell = cell;
+            }
+        };
+
         // ---- Sim units from the scenario ----
         for (const auto& u : map.units) {
             game::Sim::Unit su;
@@ -1260,6 +1274,7 @@ static Outcome runScenario(int argc, char** argv, const std::string& mapPath,
             su.stats = rules.unit(u.type, isShipType(u.type) ? game::UnitKind::Ship
                                                              : game::UnitKind::Vehicle);
             su.hp = std::max(1, su.stats.strength * u.health / 256);
+            orderFor(u.mission, u.cell, su);
             sim.addUnit(std::move(su), u.cell);
         }
         for (const auto& inf : map.infantry) {
@@ -1271,6 +1286,7 @@ static Outcome runScenario(int argc, char** argv, const std::string& mapPath,
             su.facing = inf.facing;
             su.stats = rules.unit(inf.type, game::UnitKind::Infantry);
             su.hp = std::max(1, su.stats.strength * inf.health / 256);
+            orderFor(inf.mission, inf.cell, su);
             sim.addUnit(std::move(su), inf.cell);
         }
 
@@ -1290,16 +1306,29 @@ static Outcome runScenario(int argc, char** argv, const std::string& mapPath,
                     reg(t);
         }
 
-        // Skirmish AI: every combatant house except the player is AI-controlled.
-        // On by default; --no-ai disables (e.g. to keep a passive-enemy sandbox
-        // or a deterministic movement regression). Headless runs only enable it
-        // when asked (--ai) or when running to a win (--until-win), so existing
-        // --sim-ticks probes stay reproducible. AI houses get a starting stipend.
+        // Scripted campaign maps (those with Win/Lose triggers) drive their
+        // enemies through per-unit missions + TeamType scripts + triggers, like
+        // the original — NOT a free-running skirmish AI. Detect them and, on
+        // those maps, leave the aggressive base-building/attack-wave AI OFF by
+        // default so a mission scripted to send two minigunners doesn't build an
+        // army. A Production/Autocreate trigger still wakes a house's AI mid-
+        // mission (runTriggerAction), matching the original's "alerted" houses.
+        bool scripted = false;
+        for (const auto& t : map.triggers)
+            if (t.action == "Win" || t.action == "Lose") {
+                scripted = true;
+                break;
+            }
+
+        // Skirmish AI: on trigger-less skirmish maps, every combatant house
+        // except the player is AI-controlled. On by default there; --no-ai
+        // disables. Headless runs only enable it when asked (--ai) or when
+        // running to a win (--until-win). AI houses get a starting stipend.
         bool headless = simTicks >= 0 || untilWin;
         bool aiEnabled = headless ? (flagArg(argc, argv, "--ai") || untilWin)
                                    : !flagArg(argc, argv, "--no-ai");
         int aiCredits = intArg(argc, argv, "--ai-credits", 5000);
-        if (aiEnabled)
+        if (aiEnabled && !scripted)
             for (const auto& h : sim.combatants())
                 if (h != playerHouse) {
                     sim.setAI(h, true);
@@ -1326,6 +1355,8 @@ static Outcome runScenario(int argc, char** argv, const std::string& mapPath,
             d.house = tt.house;
             for (const auto& [type, count] : tt.roster)
                 d.roster.push_back({type, count, isInfantryType(type)});
+            for (const auto& [mission, arg] : tt.missions)
+                d.script.push_back({mission, arg});
             sim.addTeamType(d);
         }
         for (size_t i = 0; i < map.waypoints.size(); i++)

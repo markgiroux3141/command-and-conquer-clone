@@ -46,6 +46,15 @@ public:
         int cooldown = 0;      // ticks until the weapon may fire again
         bool autoTarget = false; // target was auto-acquired (guard), not ordered
 
+        // Scripted standing order (scenario maps; ignored for the player house
+        // and for houses under the skirmish AI). Guard/AreaGuard hold position
+        // and return fire; Hunt actively seeks the nearest enemy. From the INI
+        // per-unit mission (Guard/Area Guard/Hunt/...). See Sim::tickStandingOrders.
+        enum class Order { Guard, AreaGuard, Hunt };
+        Order order = Order::Guard;
+        int orderCell = -1;    // AreaGuard: home cell to leash back to
+        int teamId = -1;       // spawned-TeamType membership (-1 = none)
+
         // Harvester state.
         enum class Harv { None, ToOre, Harvest, ToRef, Unload };
         bool harvester = false;
@@ -103,6 +112,11 @@ public:
         std::string name, house;
         struct Member { std::string type; int count = 0; bool infantry = false; };
         std::vector<Member> roster;
+        // Scripted mission list (TEAMTYPE.CPP). Replayed by tickTeams to drive
+        // spawned squads: e.g. Move:0, Move:1, Move:2, Attack Units (a patrol
+        // that walks waypoints then attacks). Empty = spawn and hold.
+        struct Step { std::string mission; int arg = 0; };
+        std::vector<Step> script;
     };
 
     // One in-progress item (per house, per category). Credits are paid as
@@ -342,7 +356,15 @@ private:
     void tickTriggers();
     void runTriggerAction(const TriggerDef& d);
     // Spawn a TeamType's roster for its house near its base (or a waypoint).
+    // If the TeamType has a scripted mission list, registers a live Team so
+    // tickTeams drives the members along it.
     void spawnTeam(const std::string& teamName);
+    // Drive scripted per-unit orders (Hunt / Area Guard) for units that aren't
+    // player-owned, skirmish-AI-owned, or team members. On the ~1s AI cadence.
+    void tickStandingOrders();
+    // Advance every live Team along its scripted mission list (Move / Attack /
+    // Guard / Loop). On the ~1s AI cadence; deterministic (tickCount_-keyed).
+    void tickTeams();
     // One AI "think" for a house (see setAI). Called on cadence from tick().
     void tickAI(const std::string& house);
     // A buildable footprint spot for `house` near its base, or -1.
@@ -352,6 +374,11 @@ private:
     Structure* mutableStructure(int id);
     // Target center position; false if the target no longer exists.
     bool targetPos(int targetUnit, int targetStruct, int& x, int& y) const;
+    // Nearest enemy of `house` to world point (fx,fy). Sets tu/ts to the chosen
+    // unit/structure id (the other -1), or both -1 if none. preferStruct picks
+    // the nearest structure when any exists, else the nearest unit.
+    void findNearestEnemy(const std::string& house, int fx, int fy,
+                          bool preferStruct, int& tu, int& ts) const;
 
     std::vector<Land> land_;
     std::vector<uint8_t> blocked_;  // static: structures, terrain objects, walls
@@ -369,6 +396,16 @@ private:
     struct TriggerState { TriggerDef def; int counter; bool dead; };
     std::vector<TriggerState> triggers_;
     std::unordered_map<std::string, TeamTypeDef> teamTypes_;
+    // A live squad spawned from a TeamTypeDef with a scripted mission list.
+    struct Team {
+        int id;
+        std::string house;
+        std::vector<TeamTypeDef::Step> script;
+        int step = 0;      // index into script; >= size() means finished
+        int stepTicks = 0; // cadence ticks spent on the current step (timeouts)
+    };
+    std::vector<Team> teams_;
+    int nextTeamId_ = 0;
     std::vector<int> waypoints_;       // waypoint index -> cell (-1 = unset)
     MissionResult missionResult_ = MissionResult::None;
     struct HouseProd {

@@ -245,7 +245,13 @@ void Sim::spawnTeam(const std::string& teamName) {
             if (c >= 0) { anchor = c; break; }
     if (anchor < 0)
         return;
+    // A scripted mission list makes this a coordinated team (drive it via
+    // tickTeams); reserve its id up front so members can be tagged as spawned.
+    int teamId = -1;
+    if (!tt.script.empty())
+        teamId = nextTeamId_++;
     int ax = anchor % kSize, ay = anchor / kSize;
+    bool anyPlaced = false;
     for (const auto& m : tt.roster) {
         if (m.type == "lst" || m.type == "boat") // no naval spawn support yet
             continue;
@@ -259,6 +265,7 @@ void Sim::spawnTeam(const std::string& teamName) {
             u.turreted = hasTurretArt(m.type);
             u.harvester = m.type == "harv";
             u.facing = 128;
+            u.teamId = teamId;
             // Spiral out from the anchor for a free, passable cell.
             bool placed = false;
             for (int r = 0; r < 12 && !placed; r++)
@@ -276,9 +283,12 @@ void Sim::spawnTeam(const std::string& teamName) {
                             continue;
                         addUnit(std::move(u), c);
                         placed = true;
+                        anyPlaced = true;
                     }
         }
     }
+    if (teamId >= 0 && anyPlaced)
+        teams_.push_back({teamId, tt.house, tt.script, 0, 0});
 }
 
 void Sim::runTriggerAction(const TriggerDef& d) {
@@ -458,6 +468,148 @@ void Sim::tickAI(const std::string& house) {
         if (targUnit >= 0 || targStruct >= 0) {
             orderAttack(force, targUnit, targStruct);
             cd = kAttackPeriod;
+        }
+    }
+}
+
+void Sim::findNearestEnemy(const std::string& house, int fx, int fy,
+                           bool preferStruct, int& tu, int& ts) const {
+    tu = ts = -1;
+    auto nearestStruct = [&](long long& bestD) {
+        int best = -1;
+        for (const auto& s : structures_) {
+            if (s.hp <= 0 || !housesEnemy(house, s.house))
+                continue;
+            long long dx = s.cx() - fx, dy = s.cy() - fy, d = dx * dx + dy * dy;
+            if (best < 0 || d < bestD) { bestD = d; best = s.id; }
+        }
+        return best;
+    };
+    auto nearestUnit = [&](long long& bestD) {
+        int best = -1;
+        for (const auto& u : units_) {
+            if (u.hp <= 0 || !housesEnemy(house, u.house))
+                continue;
+            long long dx = u.x - fx, dy = u.y - fy, d = dx * dx + dy * dy;
+            if (best < 0 || d < bestD) { bestD = d; best = u.id; }
+        }
+        return best;
+    };
+    long long bestD = -1;
+    if (preferStruct) {
+        ts = nearestStruct(bestD);
+        if (ts < 0) { bestD = -1; tu = nearestUnit(bestD); }
+    } else {
+        tu = nearestUnit(bestD);
+        if (tu < 0) { bestD = -1; ts = nearestStruct(bestD); }
+    }
+}
+
+void Sim::tickStandingOrders() {
+    if (tickCount_ % 15 != 0) // coordinate on the ~1s cadence
+        return;
+    for (auto& u : units_) {
+        // Skip units the player commands, the skirmish AI runs, team members
+        // (driven by tickTeams), harvesters, and anything already busy.
+        if (u.hp <= 0 || u.teamId >= 0 || u.harvester)
+            continue;
+        if (u.house == playerHouse_ || aiHouses_.count(u.house))
+            continue;
+        if (u.hasTarget() || u.moving() || !u.path.empty())
+            continue;
+        if (u.order == Unit::Order::Hunt) {
+            int tu = -1, ts = -1;
+            findNearestEnemy(u.house, u.x, u.y, /*preferStruct=*/false, tu, ts);
+            if (tu >= 0 || ts >= 0)
+                orderAttack({u.id}, tu, ts);
+        } else if (u.order == Unit::Order::AreaGuard && u.orderCell >= 0) {
+            // Return to post if pulled away (auto-acquire keeps us defending;
+            // this just re-centers a unit that chased or was shoved off).
+            int dx = std::abs(u.cell() % kSize - u.orderCell % kSize);
+            int dy = std::abs(u.cell() / kSize - u.orderCell / kSize);
+            if (std::max(dx, dy) > 3)
+                orderMove({u.id}, u.orderCell);
+        }
+        // Guard: hold; tickAutoAcquire already engages anything in range.
+    }
+}
+
+void Sim::tickTeams() {
+    if (teams_.empty())
+        return;
+    // Drop teams whose members are all dead.
+    teams_.erase(std::remove_if(teams_.begin(), teams_.end(),
+                    [&](const Team& t) {
+                        for (const auto& u : units_)
+                            if (u.teamId == t.id && u.hp > 0)
+                                return false;
+                        return true;
+                    }),
+                 teams_.end());
+    if (tickCount_ % 15 != 0) // coordinate on the ~1s cadence
+        return;
+    for (auto& team : teams_) {
+        if (team.step >= int(team.script.size()))
+            continue; // script finished: members hold / auto-acquire
+        std::vector<int> members;
+        for (const auto& u : units_)
+            if (u.teamId == team.id && u.hp > 0)
+                members.push_back(u.id);
+        if (members.empty())
+            continue;
+        const TeamTypeDef::Step& st = team.script[team.step];
+        team.stepTicks++;
+        const std::string& m = st.mission;
+
+        if (m == "Move" || m == "Move to Cell") {
+            int target = -1;
+            if (m == "Move") {
+                if (st.arg >= 0 && st.arg < int(waypoints_.size()))
+                    target = waypoints_[st.arg];
+            } else if (st.arg >= 0 && st.arg < kSize * kSize) {
+                target = st.arg;
+            }
+            if (target < 0) { team.step++; team.stepTicks = 0; continue; }
+            bool allArrived = true;
+            for (int id : members) {
+                const Unit* u = findUnit(id);
+                int dx = std::abs(u->cell() % kSize - target % kSize);
+                int dy = std::abs(u->cell() / kSize - target / kSize);
+                if (std::max(dx, dy) > 2) { allArrived = false; break; }
+            }
+            if (allArrived) { team.step++; team.stepTicks = 0; continue; }
+            std::vector<int> idle; // (re)issue movement for stopped members
+            for (int id : members) {
+                const Unit* u = findUnit(id);
+                if (!u->moving() && u->path.empty())
+                    idle.push_back(id);
+            }
+            if (!idle.empty())
+                orderMove(idle, target);
+            if (team.stepTicks > 40) { team.step++; team.stepTicks = 0; } // stuck
+        } else if (m.rfind("Attack", 0) == 0 || m == "Rampage") {
+            bool preferStruct = (m == "Attack Base");
+            for (int id : members) {
+                Unit* u = mutableUnit(id);
+                if (!u || u->hasTarget() || u->moving() || !u->path.empty())
+                    continue;
+                int tu = -1, ts = -1;
+                findNearestEnemy(team.house, u->x, u->y, preferStruct, tu, ts);
+                if (tu >= 0 || ts >= 0)
+                    orderAttack({id}, tu, ts);
+            }
+            // Terminal: hold on this step, re-engaging as targets fall.
+        } else if (m == "Loop") {
+            team.step = 0;
+            team.stepTicks = 0;
+        } else {
+            // Guard / Guard Area / Defend Base / Retreat / Unload / unknown:
+            // hold for the scripted duration (arg ~seconds) then advance;
+            // members auto-acquire meanwhile.
+            if (team.stepTicks > std::max(1, st.arg)) {
+                team.step++;
+                team.stepTicks = 0;
+            }
         }
     }
 }
@@ -1132,6 +1284,11 @@ void Sim::tick() {
         }
     }
     tickTriggers();
+    // Scripted enemy behaviour on scenario maps: per-unit standing orders
+    // (Hunt / Area Guard) and coordinated team scripts. Skips player and
+    // skirmish-AI houses, so trigger-less skirmish maps are unaffected.
+    tickStandingOrders();
+    tickTeams();
     tickCount_++;
     tickProduction();
     for (auto& u : units_) {

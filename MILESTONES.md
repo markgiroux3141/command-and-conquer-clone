@@ -234,6 +234,26 @@ so nothing overflows the 140px sidebar.
       units (reinforcements especially) can't path into the un-arted border past
       where the camera can scroll. (Reported: a humvee drove above the top scroll
       limit — 2026-07-14.)
+- [x] **AI campaign fidelity** (2026-07-14, session 14): scripted campaign
+      enemies now behave like the original instead of a free-running skirmish AI.
+      (1) **Gating** — maps with `Win`/`Lose` triggers are detected as scripted;
+      on those the aggressive base-building/attack-wave AI is left OFF by default
+      (a `Production`/`Autocreate` trigger still wakes a house mid-mission, like
+      the original's *alerted* houses). Full skirmish AI stays on for trigger-less
+      maps. (2) **Per-unit INI missions** honored: the `[UNITS]`/`[INFANTRY]`
+      mission field is retained (`map.cpp`) and mapped to a sim standing order —
+      `Hunt` (seek nearest enemy), `Area Guard` (hold + leash to spawn), else
+      `Guard` (hold + return fire). (3) **Coordinated TeamType missions**: the
+      `[TeamTypes]` mission list (`Move:wpt` / `Attack Units` / `Guard` / `Loop`)
+      is now parsed + retained + replayed — `spawnTeam` registers a live `Team`
+      that `Sim::tickTeams` drives along its script (patrol waypoints, then
+      attack). Verified on **GDI mission 1** (scg01ea): *before* — Nod got a
+      5000cr stipend and marched its whole 10-man garrison at the player (units
+      pulled from spawn to the player base, 6 dead by tick 1200); *after* — all
+      10 defenders **hold their exact spawn cells**, Nod has 0 credits/builds
+      nothing, and only the scripted `NOD1` 2-minigunner patrol walks waypoints
+      0→1→2 and attacks (repelled ~tick 1540). Headless `--sim-ticks --ai`
+      byte-identical across two runs.
 - [ ] Phase 7 polish / known gaps:
       - **Reinforcements spawn near the house's base**, not delivered at the map
         edge / shore. The originals bring them in from a waypoint or by LST
@@ -241,12 +261,19 @@ so nothing overflows the 140px sidebar.
         pass fix: spawn at the reinforcement waypoint + move onto the map;
         proper fix needs naval/air transport. (Reported: units "appearing out of
         nowhere" mid-map instead of at the shore — 2026-07-14, session 12.)
-      - Coordinated **TeamType missions** (Move:wpt / Attack / Guard scripts) are
-        parsed-past, not run — spawned units just fold into the generic AI wave.
+      - **Difficulty tiers + AlertTime cadence + `[Base]` gating** for the awake
+        AI not yet done (session 14 gated the AI off for scripted houses rather
+        than tuning it; scg01ea's `[Base]` is empty so base-building was moot).
+      - Team scripts cover the common missions; `Move to Cell` uses the raw cell
+        arg (no TD 64→128 remap), and `Attack Tarcom`/`Unload`/naval `LST` legs
+        are approximated or skipped.
+      - RA campaign scripting is unaffected — RA's numeric trigger format isn't
+        matched by the (TD-shaped) `Win`/`Lose`/`Create Team` string checks, so
+        RA missions keep the old skirmish behaviour.
       - Trigger coverage is a subset: no superweapons, `Built It`, `Discovered`,
         `Credits`, cell triggers, or trigger-chaining.
-      - AI has no defensive-structure building, difficulty tiers, building
-        rebuild, or per-map `[Base]` prebuilt list.
+      - AI has no defensive-structure building, building rebuild, or per-map
+        `[Base]` prebuilt list.
 
 ## Phase 8 — Audio & polish
 
@@ -438,6 +465,29 @@ carries the delta. Update this file's checkboxes *before* writing a handoff.
 
 ### Session log
 
+- **2026-07-14 (session 14): Phase 7 polish — AI campaign fidelity (Track B).**
+  Fixed the "Nod rushes and obliterates the player in GDI mission 1" gap. Root
+  cause was fidelity, not tuning: our engine ran a full always-on skirmish AI
+  (+5000cr stipend) over the top of a mission whose enemy is *scripted and
+  restrained*, and the map loader dropped two INI facts that carry that restraint
+  — per-unit missions and TeamType mission lists. Fixes (confirmed the gating
+  approach with the user, who asked to "do what the original does" + honor
+  Hunt/Area Guard): (1) **gate** the skirmish AI off on maps with `Win`/`Lose`
+  triggers (scripted missions), letting triggers/teams/unit-orders drive enemies
+  as the original's `HouseClass::AI` does — a `Production`/`Autocreate` trigger
+  still wakes a house; (2) **retain + honor per-unit missions** (`map.{h,cpp}` →
+  `Sim::Unit::Order` {Guard, AreaGuard, Hunt}; `Sim::tickStandingOrders`); (3)
+  **retain + replay TeamType scripts** (`map.{h,cpp}` `TeamType::missions` →
+  `Sim::TeamTypeDef::Step`; `spawnTeam` registers a `Team`; `Sim::tickTeams`
+  walks `Move`/`Attack`/`Guard`/`Loop`). Both new tick passes run on the ~1s
+  cadence, skip player + skirmish-AI houses (so trigger-less skirmish maps are
+  untouched), and are `tickCount_`-keyed (deterministic). **Verified** scg01ea
+  before/after (see the Phase 7 "AI campaign fidelity" checklist): garrison now
+  holds; only the `NOD1` 2-man patrol advances; headless `--sim-ticks --ai`
+  byte-identical across runs (sha1 `9C500155…`); `--ui-shot` + interactive setup
+  path load without crashing. Next Track B: difficulty tiers + AlertTime cadence
+  + `[Base]` gating for awake AI; reinforcement map-edge/LST entry; broader
+  triggers; RA-format campaign scripting.
 - **2026-07-14 (session 13): Phase 8 — main menu + game flow (Track A).** Wrapped
   the single-map shell in a game-state machine so it plays like a real game
   instead of freezing on the win/lose banner. `main()` now runs Menu → Mission →

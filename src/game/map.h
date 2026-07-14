@@ -7,6 +7,9 @@ namespace game {
 
 // Which classic game a map came from. Determines the template table, theater
 // art layout, and cell-numbering width used when the map was authored.
+// Custom levels authored by our own mapedit tool load as TiberianDawn (TD art,
+// theaters and type lists) but use the full 128-wide identity cell numbering
+// and an uncompressed sibling .bin rather than TD's 64x64 native layout.
 enum class Game { RedAlert, TiberianDawn };
 
 // A scenario/skirmish map loaded from its INI file (Red Alert or Tiberian
@@ -48,6 +51,8 @@ struct MapFile {
         int cell = 0;        // y*kSize + x
         int facing = 0;      // 0-255, 0 = north
         int subcell = 0;     // infantry only: 0 = center, 1-4 = corners
+        std::string mission; // units/infantry only: INI order ("Guard",
+                             // "Area Guard", "Hunt", "Sleep", ...); "" = none
     };
     std::vector<Object> units;      // includes ships
     std::vector<Object> infantry;
@@ -65,19 +70,27 @@ struct MapFile {
         std::string team;   // TeamType name, or "None"
         bool persist = false;
     };
-    // A reusable squad template: a house + a roster of (type, count). The
-    // scripted mission/behaviour fields are parsed past but not retained (the
-    // skirmish AI drives spawned units).
+    // A reusable squad template: a house, a roster of (type, count), and the
+    // scripted mission list that drives spawned members (Move:wpt, Attack
+    // Units, Guard, Loop, ...). TEAMTYPE.CPP Coordinate_* semantics.
     struct TeamType {
         std::string name;
         std::string house;
-        std::vector<std::pair<std::string, int>> roster; // type -> count
+        std::vector<std::pair<std::string, int>> roster;   // type -> count
+        std::vector<std::pair<std::string, int>> missions; // mission -> argument
     };
     std::vector<Trigger> triggers;
     std::vector<TeamType> teamTypes;
     std::vector<int> waypoints; // index -> cell (-1 = unset)
 
     static MapFile load(const std::string& iniPath);
+
+    // Serialize to the engine's custom-level format used by mapedit: writes
+    // `iniPath` (an INI marked [Basic] NewINIFormat=1 with TD-flavored object
+    // sections and full 128-wide identity cell numbering) plus a sibling .bin
+    // of kSize*kSize cells, 2 bytes each (template id, icon; 0xff = clear).
+    // No LCW compression. Overlays are written from `tdOverlay`.
+    void save(const std::string& iniPath) const;
 
     // Theater art extension: ".tem", ".sno" or ".int".
     std::string theaterExt() const;

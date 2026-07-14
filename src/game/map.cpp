@@ -18,6 +18,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <iomanip>
 #include <stdexcept>
 
 namespace game {
@@ -131,7 +133,8 @@ std::vector<std::string> splitCsv(const std::string& s) {
 // the engine's 128-wide grid index (identity for RA, 64->128 for TD).
 template <typename CellFn>
 void parseObjects(const fmt::IniFile& ini, const char* section,
-                  std::vector<MapFile::Object>& out, bool isInfantry, CellFn cellFn) {
+                  std::vector<MapFile::Object>& out, bool isInfantry,
+                  bool hasMission, CellFn cellFn) {
     const auto* sec = ini.section(section);
     if (!sec)
         return;
@@ -151,6 +154,12 @@ void parseObjects(const fmt::IniFile& ini, const char* section,
         } else {
             obj.facing = std::stoi(f[4]);
         }
+        // UNITS/SHIPS: house,type,health,cell,facing,mission,trigger.
+        // INFANTRY:    house,type,health,cell,subcell,mission,facing,trigger.
+        // Either way the per-unit order (Guard/Area Guard/Hunt/...) is field 5.
+        // STRUCTURES has a trigger there instead, so callers opt in.
+        if (hasMission && f.size() > 5)
+            obj.mission = f[5];
         if (obj.cell >= 0 && obj.cell < MapFile::kSize * MapFile::kSize)
             out.push_back(std::move(obj));
     }
@@ -177,9 +186,10 @@ void parseScripting(const fmt::IniFile& ini, MapFile& map, CellFn cellFn) {
             map.triggers.push_back(std::move(t));
         }
     }
-    // [TeamTypes]: Name=House,<9 flags>,ClassCount,Class:Num...,MissionCount,...
-    // (TEAMTYPE.CPP Fill_In). We keep only the house + roster; the AI drives
-    // behaviour, so the scripted mission list is parsed past, not stored.
+    // [TeamTypes]: Name=House,<9 flags>,ClassCount,Class:Num...,MissionCount,
+    // Mission:Arg... (TEAMTYPE.CPP Fill_In). We keep the house, the roster, and
+    // the scripted mission list (Move:wpt / Attack Units / Guard / Loop / ...),
+    // which the sim replays to drive spawned squads faithfully.
     if (const auto* sec = ini.section("TeamTypes")) {
         for (const auto& [key, value] : sec->entries) {
             auto f = splitCsv(value);
@@ -189,13 +199,29 @@ void parseScripting(const fmt::IniFile& ini, MapFile& map, CellFn cellFn) {
             tt.name = key;
             tt.house = f[0];
             int classCount = std::atoi(f[10].c_str());
-            for (int i = 0; i < classCount && 11 + i < int(f.size()); i++) {
-                const std::string& tok = f[11 + i];
+            int i = 11;
+            for (int c = 0; c < classCount && i < int(f.size()); c++, i++) {
+                const std::string& tok = f[i];
                 size_t colon = tok.find(':');
                 if (colon == std::string::npos)
                     continue;
                 tt.roster.emplace_back(toLower(tok.substr(0, colon)),
                                        std::atoi(tok.c_str() + colon + 1));
+            }
+            // MissionCount then that many "Mission:Argument" tokens. Mission
+            // names keep their original spacing/case ("Attack Units", "Move").
+            if (i < int(f.size())) {
+                int missionCount = std::atoi(f[i].c_str());
+                i++;
+                for (int m = 0; m < missionCount && i < int(f.size()); m++, i++) {
+                    const std::string& tok = f[i];
+                    size_t colon = tok.find(':');
+                    if (colon == std::string::npos)
+                        tt.missions.emplace_back(tok, 0);
+                    else
+                        tt.missions.emplace_back(tok.substr(0, colon),
+                                                 std::atoi(tok.c_str() + colon + 1));
+                }
             }
             map.teamTypes.push_back(std::move(tt));
         }
@@ -215,11 +241,18 @@ void parseScripting(const fmt::IniFile& ini, MapFile& map, CellFn cellFn) {
 }
 
 MapFile loadTd(fmt::IniFile& ini, const std::string& iniPath);
+MapFile loadCustom(fmt::IniFile& ini, const std::string& iniPath);
 
 } // namespace
 
 MapFile MapFile::load(const std::string& iniPath) {
     fmt::IniFile ini = fmt::IniFile::load(iniPath);
+
+    // Custom levels authored by mapedit carry the [Basic] NewINIFormat marker
+    // and, like TD maps, have no [MapPack]. Detect them first so the TD .bin
+    // branch below does not claim them.
+    if (ini.getInt("Basic", "NewINIFormat") != 0)
+        return loadCustom(ini, iniPath);
 
     // Tiberian Dawn maps have no packed [MapPack]; terrain lives in a sibling
     // .bin. Detect by section, then fall back to the .bin's presence.
@@ -257,10 +290,10 @@ MapFile MapFile::load(const std::string& iniPath) {
         map.cells[i].overlay = overlayData[i];
 
     auto identity = [](int c) { return c; };
-    parseObjects(ini, "UNITS", map.units, false, identity);
-    parseObjects(ini, "SHIPS", map.units, false, identity);
-    parseObjects(ini, "INFANTRY", map.infantry, true, identity);
-    parseObjects(ini, "STRUCTURES", map.structures, false, identity);
+    parseObjects(ini, "UNITS", map.units, false, true, identity);
+    parseObjects(ini, "SHIPS", map.units, false, true, identity);
+    parseObjects(ini, "INFANTRY", map.infantry, true, true, identity);
+    parseObjects(ini, "STRUCTURES", map.structures, false, false, identity);
     parseScripting(ini, map, identity);
 
     if (const auto* terrain = ini.section("TERRAIN")) {
@@ -322,9 +355,9 @@ MapFile loadTd(fmt::IniFile& ini, const std::string& iniPath) {
     }
 
     auto identity = tdCell;
-    parseObjects(ini, "UNITS", map.units, false, identity);
-    parseObjects(ini, "INFANTRY", map.infantry, true, identity);
-    parseObjects(ini, "STRUCTURES", map.structures, false, identity);
+    parseObjects(ini, "UNITS", map.units, false, true, identity);
+    parseObjects(ini, "INFANTRY", map.infantry, true, true, identity);
+    parseObjects(ini, "STRUCTURES", map.structures, false, false, identity);
     parseScripting(ini, map, tdCell);
 
     // [OVERLAY] cell=NAME (tiberium ti1-ti12, walls, crates).
@@ -343,6 +376,68 @@ MapFile loadTd(fmt::IniFile& ini, const std::string& iniPath) {
         for (const auto& [key, value] : terrain->entries) {
             MapFile::TerrainObject obj;
             obj.cell = tdCell(std::stoi(key));
+            obj.name = toLower(splitCsv(value)[0]);
+            if (obj.cell >= 0 && obj.cell < int(total))
+                map.terrain.push_back(std::move(obj));
+        }
+    }
+
+    return map;
+}
+
+// Custom-level loader for maps authored by our mapedit tool. Unlike the native
+// TD path, terrain uses the engine's full 128-wide identity cell numbering and
+// the sibling .bin holds kSize*kSize cells (not 64x64). Content is TD-flavored
+// (TD template table, theaters, type lists), so game is TiberianDawn.
+MapFile loadCustom(fmt::IniFile& ini, const std::string& iniPath) {
+    MapFile map;
+    map.game = Game::TiberianDawn;
+    map.theater = toUpper(ini.get("Map", "Theater", "TEMPERATE"));
+    map.x = ini.getInt("Map", "X");
+    map.y = ini.getInt("Map", "Y");
+    map.width = ini.getInt("Map", "Width");
+    map.height = ini.getInt("Map", "Height");
+
+    constexpr size_t total = size_t(MapFile::kSize) * MapFile::kSize;
+    map.cells.assign(total, {});
+
+    std::filesystem::path binPath = iniPath;
+    binPath.replace_extension(".bin");
+    std::FILE* f = std::fopen(binPath.string().c_str(), "rb");
+    if (!f)
+        throw std::runtime_error("map: cannot open " + binPath.string());
+    std::vector<uint8_t> bin(total * 2);
+    size_t got = std::fread(bin.data(), 1, bin.size(), f);
+    std::fclose(f);
+    if (got < bin.size())
+        throw std::runtime_error("map: short custom .bin: " + binPath.string());
+    for (size_t i = 0; i < total; i++) {
+        uint8_t type = bin[i * 2], icon = bin[i * 2 + 1];
+        map.cells[i].templateId = (type == 0xff) ? 0xffff : type;
+        map.cells[i].icon = icon;
+    }
+
+    auto identity = [](int c) { return c; };
+    parseObjects(ini, "UNITS", map.units, false, true, identity);
+    parseObjects(ini, "INFANTRY", map.infantry, true, true, identity);
+    parseObjects(ini, "STRUCTURES", map.structures, false, false, identity);
+    parseScripting(ini, map, identity);
+
+    // [OVERLAY] cell=NAME (walls, tiberium, crates), TD-style overlay list.
+    if (const auto* overlay = ini.section("OVERLAY")) {
+        for (const auto& [key, value] : overlay->entries) {
+            MapFile::TerrainObject obj;
+            obj.cell = std::stoi(key);
+            obj.name = toLower(value);
+            if (obj.cell >= 0 && obj.cell < int(total))
+                map.tdOverlay.push_back(std::move(obj));
+        }
+    }
+    // [TERRAIN] cell=NAME[,action] (trees, rocks). Keep only the art name.
+    if (const auto* terrain = ini.section("TERRAIN")) {
+        for (const auto& [key, value] : terrain->entries) {
+            MapFile::TerrainObject obj;
+            obj.cell = std::stoi(key);
             obj.name = toLower(splitCsv(value)[0]);
             if (obj.cell >= 0 && obj.cell < int(total))
                 map.terrain.push_back(std::move(obj));
@@ -382,6 +477,100 @@ std::string MapFile::theaterPalette() const {
     if (theater == "INTERIOR")
         return "interior";
     return "temperat";
+}
+
+void MapFile::save(const std::string& iniPath) const {
+    constexpr size_t total = size_t(kSize) * kSize;
+
+    // Terrain .bin: uncompressed, kSize*kSize cells of [templateId u8][icon u8];
+    // template 0xff means clear (mirrors loadCustom).
+    std::filesystem::path binPath = iniPath;
+    binPath.replace_extension(".bin");
+    {
+        std::vector<uint8_t> bin(total * 2, 0);
+        for (size_t i = 0; i < total && i < cells.size(); i++) {
+            uint16_t id = cells[i].templateId;
+            bin[i * 2] = (id == 0xffff) ? 0xff : uint8_t(id);
+            bin[i * 2 + 1] = cells[i].icon;
+        }
+        std::ofstream bf(binPath, std::ios::binary | std::ios::trunc);
+        if (!bf)
+            throw std::runtime_error("map: cannot write " + binPath.string());
+        bf.write(reinterpret_cast<const char*>(bin.data()), std::streamsize(bin.size()));
+    }
+
+    std::ofstream f(iniPath, std::ios::trunc);
+    if (!f)
+        throw std::runtime_error("map: cannot write " + iniPath);
+
+    f << "[Basic]\n";
+    f << "NewINIFormat=1\n\n";
+
+    f << "[Map]\n";
+    f << "Theater=" << theater << "\n";
+    f << "X=" << x << "\n";
+    f << "Y=" << y << "\n";
+    f << "Width=" << width << "\n";
+    f << "Height=" << height << "\n\n";
+
+    // Object sections. Field orders must match parseObjects()'s reader.
+    if (!structures.empty()) {
+        f << "[STRUCTURES]\n"; // house,type,health,cell,facing,trigger
+        int n = 0;
+        for (const auto& o : structures)
+            f << std::setfill('0') << std::setw(3) << n++ << "=" << o.house << ","
+              << o.type << "," << o.health << "," << o.cell << "," << o.facing
+              << ",None\n";
+        f << "\n";
+    }
+    if (!units.empty()) {
+        f << "[UNITS]\n"; // house,type,health,cell,facing,mission,trigger
+        int n = 0;
+        for (const auto& o : units)
+            f << std::setfill('0') << std::setw(3) << n++ << "=" << o.house << ","
+              << o.type << "," << o.health << "," << o.cell << "," << o.facing << ","
+              << (o.mission.empty() ? "Guard" : o.mission) << ",None\n";
+        f << "\n";
+    }
+    if (!infantry.empty()) {
+        f << "[INFANTRY]\n"; // house,type,health,cell,subcell,mission,facing,trigger
+        int n = 0;
+        for (const auto& o : infantry)
+            f << std::setfill('0') << std::setw(3) << n++ << "=" << o.house << ","
+              << o.type << "," << o.health << "," << o.cell << "," << o.subcell << ","
+              << (o.mission.empty() ? "Guard" : o.mission) << "," << o.facing
+              << ",None\n";
+        f << "\n";
+    }
+
+    // Overlay + terrain objects, keyed by cell.
+    if (!tdOverlay.empty()) {
+        f << "[OVERLAY]\n";
+        for (const auto& t : tdOverlay)
+            f << t.cell << "=" << t.name << "\n";
+        f << "\n";
+    }
+    if (!terrain.empty()) {
+        f << "[TERRAIN]\n";
+        for (const auto& t : terrain)
+            f << t.cell << "=" << t.name << "\n";
+        f << "\n";
+    }
+
+    // Spawn/waypoints: index=cell, skipping unset (-1).
+    bool anyWp = false;
+    for (int c : waypoints)
+        if (c >= 0) {
+            anyWp = true;
+            break;
+        }
+    if (anyWp) {
+        f << "[Waypoints]\n";
+        for (size_t i = 0; i < waypoints.size(); i++)
+            if (waypoints[i] >= 0)
+                f << i << "=" << waypoints[i] << "\n";
+        f << "\n";
+    }
 }
 
 } // namespace game
