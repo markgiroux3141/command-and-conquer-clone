@@ -27,6 +27,13 @@ Sell/Repair, and real DOS sidebar art (medallion, strip slots, scroll arrows).
   window shows *more map*, the sidebar snaps to the right, camera clamps are
   guarded for window>map, and the tactical area is cleared black when larger
   than the map. **Screen-edge scroll** fires only inside the tactical viewport.
+  KNOWN LIMITATION: fullscreen only *enlarges the window* (no scaling), so a
+  small map looks tiny in a big black field — next-task #1 fixes this with a
+  scaled logical-resolution render.
+- **Building buildups**: placing a structure / deploying the MCV plays the
+  20-frame `<type>make.shp` "rising" animation (~1.3 s) + a `constru2` sound,
+  then swaps to the real building. Transient `Buildup` overlay in the shell; the
+  sim structure is live immediately. Interactive only (headless is instant).
 - **Sidebar** (all verified via `--ui-shot`):
   - Radar box: the faction **medallion** (GDI eagle / Nod viper — real
     `radar.gdi`/`radar.nod` art) until the house owns a Comm Center (`hq`/`eye`),
@@ -43,14 +50,33 @@ Sell/Repair, and real DOS sidebar art (medallion, strip slots, scroll arrows).
   - Top tab bar: `OPTIONS | PWR n/n | $credits | SIDEBAR`.
 - Still a sandbox: no win/lose, no AI/base-building, no mission triggers.
 
-## Next tasks (suggested order)
+## Next tasks (suggested order) — user-requested, top priority
 
-1. **Finish UI wiring**: OPTIONS menu (pause/quit/volume), MAP button (jump/
-   enlarge radar), a custom mouse cursor (TD `mouse.shp` isn't ShpD2 — either
-   port a cursor SHP or draw one), sell/repair cursor hints. Optionally swap the
-   hand-drawn tab bar / power-bar for `tabs.shp` / `power.shp` art.
-2. **Win/lose + a beatable mission** (Phase 7) + a minimal skirmish AI.
-3. **Polish**: TD tiberium density frames, muzzle-flash anims, sound pan.
+1. **Fullscreen should scale, not just enlarge.** Right now fullscreen only
+   makes the window desktop-sized, so a small map shows a tiny image in a sea of
+   black (see below). Switch to a **fixed internal render resolution scaled to
+   the display**: render the whole frame into an offscreen surface at a logical
+   size, upload to an `SDL_Texture`, and present via `SDL_Renderer` with
+   `SDL_RenderSetLogicalSize` (letterbox auto-scale). Then convert mouse coords
+   with `SDL_RenderWindowToLogical` so clicks/edge-scroll still line up. This is
+   a contained render-pipeline refactor of the interactive loop (all the HUD
+   drawing stays; only the final blit-to-window changes).
+2. **"New construction options" EVA.** Play EVA `newopt1` ("New construction
+   options") when the buildable set grows — i.e. when a just-finished building
+   unlocks new cameos. Track the previous `canProduce` type set each frame (or
+   on the buildup-complete edge) and play the cue when a new type appears.
+   NOTE: EVA speech is Covert-Ops-only (`covert_ops/AUD1/SPEECH`); confirm
+   `newopt1.aud` is present (degrade silent if not).
+3. **Proper mouse cursors.** TD `mouse.shp` isn't ShpD2 (we fall back to the OS
+   cursor). Decode its real format and pick the frame by context: normal arrow,
+   move (green), no-go (red), attack (crosshair/red), deploy (MCV), sell
+   (wrench/$), repair, guard, and the 8 scroll arrows at screen edges. Wire it
+   to the current mode/hover (placement, sell/repair mode, ordering units).
+4. **Rest of UI wiring**: OPTIONS menu (pause/quit/volume), MAP button
+   (jump/enlarge radar). Optionally swap the hand-drawn tab bar / power-bar for
+   `tabs.shp` / `power.shp` art.
+5. **Win/lose + a beatable mission** (Phase 7) + a minimal skirmish AI.
+6. **Polish**: TD tiberium density frames, muzzle-flash anims, sound pan.
 
 ## Gotchas discovered this session (not in code comments)
 
