@@ -287,7 +287,13 @@ so nothing overflows the 140px sidebar.
       direct-launch + headless verification). Headless (`--sim-ticks`/
       `--until-win`) is untouched and byte-identical. Verified: menu + post
       screenshots render correctly; interactive launch opens the menu with no
-      crash; determinism re-confirmed.
+      crash; determinism re-confirmed. **Two follow-up fixes:** (a) menu/post
+      clicks did nothing — the button/row hit-rects were built in the draw pass
+      *after* event polling, so clicks tested against zeroed rects; geometry is
+      now fixed up front. (b) TD **wall overlays** (sandbag/cyclone/brick/barbwire/
+      wood) always drew frame 0, so vertical runs didn't join — they now pick a
+      frame from same-type N/E/S/W neighbors (CELL.CPP `Wall_Update`, bits
+      1/2/4/8) so fences connect (verified by screenshot).
 - [ ] In-game options menu (the OPTIONS tab is a stub), save/load.
 
 ## Phase 9 — Map editor (side quest; can start any time after Phase 4)

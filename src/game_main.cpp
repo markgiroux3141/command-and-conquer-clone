@@ -1075,6 +1075,14 @@ static Outcome runScenario(int argc, char** argv, const std::string& mapPath,
 
         // ---- Overlay layer (Tiberian Dawn): tiberium (ti1-12), walls, crates ----
         if (isTd) {
+            // cell -> overlay name, for wall adjacency lookups.
+            std::unordered_map<int, std::string> tdOv;
+            for (const auto& ov : map.tdOverlay)
+                tdOv.emplace(ov.cell, ov.name);
+            auto sameOverlay = [&](int cell, const std::string& name) {
+                auto it = tdOv.find(cell);
+                return it != tdOv.end() && it->second == name;
+            };
             for (const auto& ov : map.tdOverlay) {
                 int ocx = ov.cell % kSize, ocy = ov.cell / kSize;
                 if (ocx < cx0 || ocx >= cx0 + cw || ocy < cy0 || ocy >= cy0 + ch)
@@ -1092,10 +1100,26 @@ static Outcome runScenario(int argc, char** argv, const std::string& mapPath,
                 const fmt::ShpFile* s = art.shp(ov.name);
                 if (!s || s->frames.empty())
                     continue;
+                // Walls pick their frame from same-type neighbors so runs join up
+                // into continuous fences (CELL.CPP Wall_Update): offsets N,E,S,W
+                // map to bits 1,2,4,8. Other overlays (tiberium, crates) use
+                // frame 0.
+                int frame = 0;
+                if (wall) {
+                    if (ocy > 0 && sameOverlay((ocy - 1) * kSize + ocx, ov.name))
+                        frame |= 1; // N
+                    if (ocx < kSize - 1 && sameOverlay(ocy * kSize + ocx + 1, ov.name))
+                        frame |= 2; // E
+                    if (ocy < kSize - 1 && sameOverlay((ocy + 1) * kSize + ocx, ov.name))
+                        frame |= 4; // S
+                    if (ocx > 0 && sameOverlay(ocy * kSize + ocx - 1, ov.name))
+                        frame |= 8; // W
+                    frame = std::min(frame, int(s->frames.size()) - 1);
+                }
                 game::BlitOptions opts;
                 opts.colorKey = true;
                 opts.shadow = true;
-                blitIndexed(mc, s->frames[0].data(), s->width, s->height,
+                blitIndexed(mc, s->frames[frame].data(), s->width, s->height,
                             (ocx - cx0) * kTile, (ocy - cy0) * kTile, pal, opts);
             }
         }
