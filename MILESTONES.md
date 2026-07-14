@@ -424,6 +424,23 @@ carries the delta. Update this file's checkboxes *before* writing a handoff.
   verified-by-construction (share the tested `drawText`, no headless trigger).
   Remaining UI polish: functional sell/repair, real radar shroud, cameo name
   tooltips.
+- **2026-07-14 (session 9): HUD wiring + fullscreen + power/radar.** Made the
+  HUD interactive and added display/system features. (1) **Fullscreen + dynamic
+  layout**: window is resizable, F11/Alt+Enter toggles borderless fullscreen,
+  and the layout re-derives from the live window size each frame (bigger window
+  → more map, sidebar snaps right; camera clamps guarded for window>map).
+  (2) **Screen-edge scroll** fixed to fire only inside the tactical viewport
+  (never over the tab bar / sidebar). (3) **Vertical power bar** in a new left
+  gutter of the sidebar: green fill = output, yellow tick = demand, red on
+  deficit (`kPowerW`/`kSideColX` shifted the cameo columns right). (4) **Radar
+  shroud**: unexplored cells draw black on the minimap and blips hide under
+  shroud. (5) **Functional SELL & REPAIR**: new `Sim::structureAt`/
+  `sellStructure` (refund ½ cost, remove) / `toggleRepair` (heal + drain credits
+  each tick, stalls when broke); the buttons toggle a click-mode and highlight
+  when active; ESC cancels. MAP button is still a stub. Built clean, sim
+  deterministic (scg01ea 35/50 @ tick 197). Verified via `--ui-shot`: power bar,
+  wider sidebar, radar shroud dimming all correct. Sell/repair click-flow is
+  verified-by-construction (no headless trigger — needs an interactive test).
 - **2026-07-08 (session 5): Phase 6 complete.** Production stats in rules
   (Cost/TechLevel/Owner/Prerequisite/BuildSpeed/land Buildable=), sim
   production slots with drip payment + power scaling, prereq tree,

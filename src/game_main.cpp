@@ -45,9 +45,11 @@ namespace {
 constexpr int kTile = 24;
 constexpr double kTickMs = 1000.0 / 15.0; // RA game speed: 15 ticks/s
 constexpr int kCameoW = 64, kCameoH = 48; // sidebar icon SHP size
-constexpr int kSidebarW = kCameoW * 2 + 12;
+constexpr int kPowerW = 14;                  // vertical power-bar gutter (left)
+constexpr int kSidebarW = kPowerW + kCameoW * 2 + 12;
+constexpr int kSideColX = kPowerW + 2;       // cameo col 0 x within the sidebar
 constexpr int kTopBar = 14;                  // OPTIONS | credits | SIDEBAR tab bar
-constexpr int kRadarH = kSidebarW - 12;      // radar/logo box (near-square)
+constexpr int kRadarH = kCameoW * 2 - 4;     // radar/logo box (near-square)
 constexpr int kBtnH = 13;                    // REPAIR / SELL / MAP button row
 constexpr int kSideTop = kTopBar + kRadarH + kBtnH + 6; // first cameo row y
 
@@ -1008,9 +1010,11 @@ int main(int argc, char** argv) {
         int viewW = std::min(mapSurf->w, 1280 - kSidebarW);
         int winW = viewW + kSidebarW, winH = std::min(mapSurf->h, 800);
         SDL_Window* win = SDL_CreateWindow("game", SDL_WINDOWPOS_CENTERED,
-                                           SDL_WINDOWPOS_CENTERED, winW, winH, 0);
+                                           SDL_WINDOWPOS_CENTERED, winW, winH,
+                                           SDL_WINDOW_RESIZABLE);
         if (!win)
             throw std::runtime_error(SDL_GetError());
+        bool fullscreen = false; // toggled with F11 / Alt+Enter
         SDL_ShowCursor(SDL_DISABLE);
         std::optional<fmt::ShpD2File> cursor;
         try {
@@ -1043,20 +1047,23 @@ int main(int argc, char** argv) {
         std::string placingType; // building awaiting placement (ghost follows mouse)
         int placeW = 0, placeH = 0;
         int sideScroll = 0;
+        // Sidebar action mode: click a friendly structure to sell/repair it.
+        enum class SideMode { None, Repair, Sell } sideMode = SideMode::None;
+        SDL_Rect btnRect[3] = {}; // REPAIR / SELL / MAP hitboxes (recomputed/frame)
         // Cameos actually on the sidebar: the candidates whose prerequisites are
         // met right now (rebuilt each frame, like the original's StripClass).
         // Pointers into the stable buildStructs/buildUnits candidate lists.
         std::vector<const BuildEntry*> visStructs, visUnits;
         auto entryPos = [&](int col, int idx, int& x, int& y) {
-            x = viewW + 4 + col * (kCameoW + 4);
+            x = viewW + kSideColX + col * (kCameoW + 4);
             y = kSideTop + idx * (kCameoH + 4) - sideScroll;
         };
         // Cameo under the mouse; null if none.
         auto sidebarHit = [&](int hx, int hy) -> const BuildEntry* {
-            if (hx < viewW + 4)
+            if (hx < viewW + kSideColX)
                 return nullptr;
-            int col = (hx - viewW - 4) / (kCameoW + 4);
-            if (col > 1 || hx >= viewW + 4 + col * (kCameoW + 4) + kCameoW)
+            int col = (hx - viewW - kSideColX) / (kCameoW + 4);
+            if (col > 1 || hx >= viewW + kSideColX + col * (kCameoW + 4) + kCameoW)
                 return nullptr;
             const auto& list = col == 0 ? visStructs : visUnits;
             int idx = (hy - kSideTop + sideScroll) / (kCameoH + 4);
@@ -1075,6 +1082,25 @@ int main(int argc, char** argv) {
         };
 
         while (!quit) {
+            // Re-layout from the live window size each frame: a bigger window
+            // (or fullscreen) simply shows more map, sidebar snaps to the right.
+            SDL_GetWindowSize(win, &winW, &winH);
+            viewW = std::max(64, winW - kSidebarW);
+            // Lay out the REPAIR|SELL|MAP buttons for this frame's width.
+            {
+                const char* bl[3] = {"REPAIR", "SELL", "MAP"};
+                int nat = 0, bw[3];
+                for (int b = 0; b < 3; b++) {
+                    bw[b] = (hudFont ? game::textWidth(*hudFont, bl[b], 0) : 24) + 6;
+                    nat += bw[b];
+                }
+                int gap = std::max(1, (kSidebarW - 8 - nat) / 2);
+                int bx = viewW + 4, byR = kTopBar + kRadarH + 2;
+                for (int b = 0; b < 3; b++) {
+                    btnRect[b] = SDL_Rect{bx, byR, bw[b], kBtnH};
+                    bx += bw[b] + gap;
+                }
+            }
             // Advance the jukebox when the current track ends.
             if (mixer.enabled() && !mixer.musicPlaying())
                 mixer.playMusic(kScores[musicIdx++ % (int(sizeof(kScores) / sizeof(kScores[0])))]);
@@ -1100,8 +1126,18 @@ int main(int argc, char** argv) {
                 if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE) {
                     if (!placingType.empty())
                         placingType.clear(); // keep the building ready
+                    else if (sideMode != SideMode::None)
+                        sideMode = SideMode::None; // cancel sell/repair mode
                     else
                         quit = true;
+                }
+                // Fullscreen toggle: F11, or Alt+Enter.
+                if (e.type == SDL_KEYDOWN &&
+                    (e.key.keysym.sym == SDLK_F11 ||
+                     (e.key.keysym.sym == SDLK_RETURN && (e.key.keysym.mod & KMOD_ALT)))) {
+                    fullscreen = !fullscreen;
+                    SDL_SetWindowFullscreen(
+                        win, fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
                 }
                 if (e.type == SDL_MOUSEWHEEL && mx >= viewW) {
                     int rows = int(std::max(visStructs.size(), visUnits.size()));
@@ -1111,7 +1147,37 @@ int main(int argc, char** argv) {
                                             0, maxScroll);
                 }
                 if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
-                    if (e.button.x >= viewW) {
+                    // REPAIR / SELL / MAP buttons take priority over everything.
+                    int hitBtn = -1;
+                    for (int b = 0; b < 3; b++) {
+                        const SDL_Rect& r = btnRect[b];
+                        if (e.button.x >= r.x && e.button.x < r.x + r.w &&
+                            e.button.y >= r.y && e.button.y < r.y + r.h)
+                            hitBtn = b;
+                    }
+                    if (hitBtn == 0)
+                        sideMode = sideMode == SideMode::Repair ? SideMode::None
+                                                               : SideMode::Repair;
+                    else if (hitBtn == 1)
+                        sideMode = sideMode == SideMode::Sell ? SideMode::None
+                                                             : SideMode::Sell;
+                    else if (hitBtn == 2)
+                        ; // MAP: radar toggle stub
+                    else if (sideMode != SideMode::None && e.button.x < viewW) {
+                        // Repair/Sell the friendly structure under the cursor.
+                        int cellX = cx0 + (e.button.x + int(camX)) / kTile;
+                        int cellY = cy0 + (e.button.y + int(camY)) / kTile;
+                        int sid = sim.structureAt(cellY * kSize + cellX);
+                        const auto* st = sid >= 0 ? sim.findStructure(sid) : nullptr;
+                        if (st && st->house == playerHouse) {
+                            if (sideMode == SideMode::Sell) {
+                                sim.sellStructure(sid);
+                                mixer.playEva("cancel1");
+                            } else {
+                                sim.toggleRepair(sid);
+                            }
+                        }
+                    } else if (e.button.x >= viewW) {
                         // Sidebar: click a cameo to build / place when ready.
                         if (const BuildEntry* en = sidebarHit(e.button.x, e.button.y)) {
                             auto cat = prodCatOf(en->kind);
@@ -1321,24 +1387,36 @@ int main(int argc, char** argv) {
 
             const Uint8* keys = SDL_GetKeyboardState(nullptr);
             float dx = 0, dy = 0;
-            if (keys[SDL_SCANCODE_A] || keys[SDL_SCANCODE_LEFT] || mx < kEdge)
+            // Screen-edge scroll only inside the tactical viewport (never over
+            // the sidebar or tab bar); the arrow/WASD keys work anywhere.
+            bool inView = mx >= 0 && mx < viewW && my >= kTopBar && my < winH;
+            if (keys[SDL_SCANCODE_A] || keys[SDL_SCANCODE_LEFT] || (inView && mx < kEdge))
                 dx -= 1;
             if (keys[SDL_SCANCODE_D] || keys[SDL_SCANCODE_RIGHT] ||
-                (mx < viewW && mx >= viewW - kEdge))
+                (inView && mx >= viewW - kEdge))
                 dx += 1;
-            if (keys[SDL_SCANCODE_W] || keys[SDL_SCANCODE_UP] || my < kEdge)
+            if (keys[SDL_SCANCODE_W] || keys[SDL_SCANCODE_UP] ||
+                (inView && my < kTopBar + kEdge))
                 dy -= 1;
-            if (keys[SDL_SCANCODE_S] || keys[SDL_SCANCODE_DOWN] || my >= winH - kEdge)
+            if (keys[SDL_SCANCODE_S] || keys[SDL_SCANCODE_DOWN] ||
+                (inView && my >= winH - kEdge))
                 dy += 1;
-            camX = std::clamp(camX + dx * kSpeed * dt, 0.0f, float(mapSurf->w - viewW));
-            camY = std::clamp(camY + dy * kSpeed * dt, 0.0f, float(mapSurf->h - winH));
+            camX = std::clamp(camX + dx * kSpeed * dt, 0.0f,
+                              std::max(0.0f, float(mapSurf->w - viewW)));
+            camY = std::clamp(camY + dy * kSpeed * dt, 0.0f,
+                              std::max(0.0f, float(mapSurf->h - winH)));
 
             SDL_Surface* wsurf = SDL_GetWindowSurface(win);
+            if (!wsurf)
+                continue;
+            game::Canvas wc = game::Canvas::wrap(wsurf);
+            // Clear the tactical area (window may be larger than the map).
+            if (viewW > mapSurf->w || winH > mapSurf->h)
+                game::fillRect(wc, 0, 0, viewW, winH, 0xff000000);
             SDL_Rect src{int(camX), int(camY), viewW, winH};
             SDL_Rect dst{0, 0, viewW, winH};
             SDL_BlitSurface(mapSurf, &src, wsurf, &dst);
 
-            game::Canvas wc = game::Canvas::wrap(wsurf);
             objects = buildDrawList(); // positions may have ticked above
             for (const auto& o : objects)
                 drawObject(wc, o, pal, int(camX), int(camY));
@@ -1399,10 +1477,14 @@ int main(int argc, char** argv) {
             for (int py = 0; py < irh; py++)
                 for (int px = 0; px < irw; px++) {
                     int sx = px * mapSurf->w / irw, sy = py * mapSurf->h / irh;
-                    wc.px[(iry + py) * wc.pitch + (irx + px)] =
-                        mc.px[sy * mc.pitch + sx];
+                    uint32_t src = mc.px[sy * mc.pitch + sx];
+                    if (!sim.explored((cy0 + sy / kTile) * kSize + cx0 + sx / kTile))
+                        src = 0xff000000; // unexplored cells are black on the radar
+                    wc.px[(iry + py) * wc.pitch + (irx + px)] = src;
                 }
             auto blip = [&](int cell, const std::string& house) {
+                if (!sim.explored(cell))
+                    return; // don't reveal units hidden by shroud
                 int bx = irx + (cell % kSize - cx0) * irw / cw;
                 int by = iry + (cell / kSize - cy0) * irh / ch;
                 uint32_t col = house == "Neutral" ? 0xffb0b0b0
@@ -1418,22 +1500,38 @@ int main(int argc, char** argv) {
                     blip(u.cell(), u.house);
             game::drawRect(wc, irx - 1, iry - 1, irw + 2, irh + 2, faction);
 
-            // REPAIR | SELL | MAP button row (visual for now). Buttons are sized
-            // to their labels so the text never overflows the narrow sidebar.
-            int byRow = kTopBar + kRadarH + 2;
-            const char* btns[] = {"REPAIR", "SELL", "MAP"};
-            int tw[3], natural = 0;
-            for (int b = 0; b < 3; b++) {
-                tw[b] = hudFont ? game::textWidth(*hudFont, btns[b], 0) : 24;
-                natural += tw[b] + 6; // 3px padding each side
+            // REPAIR | SELL | MAP buttons (rects computed at the loop top). The
+            // active mode's button is highlighted/pressed.
+            {
+                const char* btns[3] = {"REPAIR", "SELL", "MAP"};
+                bool active[3] = {sideMode == SideMode::Repair,
+                                  sideMode == SideMode::Sell, false};
+                for (int b = 0; b < 3; b++) {
+                    const SDL_Rect& r = btnRect[b];
+                    bevelPanel(wc, r.x, r.y, r.w, r.h,
+                               active[b] ? 0xff8a6420 : kFace, active[b]);
+                    drawTextCentered(wc, hudFont, btns[b], r.x, r.w, r.y + 2,
+                                     active[b] ? kGreen : kText, 0);
+                }
             }
-            int gap = std::max(1, (kSidebarW - 8 - natural) / 2);
-            int bx = viewW + 4;
-            for (int b = 0; b < 3; b++) {
-                int w = tw[b] + 6;
-                bevelPanel(wc, bx, byRow, w, kBtnH, kFace);
-                drawTextCentered(wc, hudFont, btns[b], bx, w, byRow + 2, kText, 0);
-                bx += w + gap;
+
+            // Vertical power bar (left gutter): green fill = output, yellow tick
+            // = demand; turns red on deficit (the original's sidebar gauge).
+            {
+                int produced = 0, drained = 0;
+                sim.power(playerHouse, produced, drained);
+                int pbx = viewW + 4, pbw = kPowerW - 8;
+                int pby = kSideTop, pbh = winH - kSideTop - 4;
+                if (pbh > 8 && pbw > 2) {
+                    bevelPanel(wc, pbx, pby, pbw, pbh, 0xff101008, /*sunken=*/true);
+                    int scale = std::max({produced, drained, 1});
+                    int outH = (pbh - 2) * produced / scale;
+                    int demY = pby + pbh - 1 - (pbh - 2) * drained / scale;
+                    uint32_t fill = drained > produced ? 0xffd83030 : kGreen;
+                    game::fillRect(wc, pbx + 1, pby + pbh - 1 - outH, pbw - 2, outH, fill);
+                    game::fillRect(wc, pbx, std::clamp(demY, pby, pby + pbh - 1), pbw, 1,
+                                   0xfff8f800);
+                }
             }
 
             // Halve a region's brightness (like the SHP shadow table) to mark
@@ -1486,7 +1584,7 @@ int main(int argc, char** argv) {
             // framed grid (the original's fixed slot background).
             for (int col = 0; col < 2; col++)
                 for (int ey = kSideTop; ey + kCameoH <= winH; ey += kCameoH + 4) {
-                    int ex = viewW + 4 + col * (kCameoW + 4);
+                    int ex = viewW + kSideColX + col * (kCameoW + 4);
                     bevelPanel(wc, ex, ey, kCameoW, kCameoH, 0xff1a1a16, /*sunken=*/true);
                 }
             drawStrip(visStructs, 0);

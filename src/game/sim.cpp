@@ -649,6 +649,40 @@ int Sim::deployMcv(int unitId, int w, int h) {
     return addStructure(std::move(st));
 }
 
+int Sim::structureAt(int cell) const {
+    int cx = cell % kSize, cy = cell / kSize;
+    for (const auto& s : structures_) {
+        if (s.hp <= 0)
+            continue;
+        int sx = s.cell % kSize, sy = s.cell / kSize;
+        if (cx >= sx && cx < sx + s.w && cy >= sy && cy < sy + s.h)
+            return s.id;
+    }
+    return -1;
+}
+
+int Sim::sellStructure(int id) {
+    for (auto& s : structures_) {
+        if (s.id != id || s.hp <= 0)
+            continue;
+        int refund = s.stats.cost / 2;
+        credits_[s.house] += refund;
+        killStructure(s); // unblocks footprint, hp=0 (purged), StructDied event
+        return refund;
+    }
+    return 0;
+}
+
+bool Sim::toggleRepair(int id) {
+    for (auto& s : structures_) {
+        if (s.id == id && s.hp > 0) {
+            s.repairing = !s.repairing;
+            return s.repairing;
+        }
+    }
+    return false;
+}
+
 bool Sim::spawnProduced(const std::string& house, const Production& p) {
     // Find the producing factory.
     const Structure* fac = nullptr;
@@ -739,6 +773,23 @@ void Sim::tick() {
             reveal(u.cell(), u.stats.sight);
     }
     tickProjectiles();
+    // Sidebar Repair: heal flagged structures, draining credits (stalls if broke).
+    for (auto& s : structures_) {
+        if (!s.repairing || s.hp <= 0)
+            continue;
+        if (s.hp >= s.stats.strength) {
+            s.repairing = false;
+            continue;
+        }
+        int step = std::max(1, s.stats.strength / 150);
+        int due = std::max(1, s.stats.cost * step / std::max(1, s.stats.strength * 2));
+        if (credits_[s.house] < due)
+            continue; // stalled until funds arrive
+        credits_[s.house] -= due;
+        s.hp = std::min(s.stats.strength, s.hp + step);
+        if (s.hp >= s.stats.strength)
+            s.repairing = false;
+    }
     units_.erase(std::remove_if(units_.begin(), units_.end(),
                                 [](const Unit& u) { return u.hp <= 0; }),
                  units_.end());

@@ -69,6 +69,7 @@ public:
         int cell = 0;       // top-left footprint cell
         int w = 1, h = 1;   // footprint, cells
         int hp = 1;
+        bool repairing = false; // sidebar Repair toggled on (heals, drains credits)
         UnitStats stats;
         // Center in world leptons.
         int cx() const { return (cell % kSize) * kLepton + w * kLepton / 2; }
@@ -211,6 +212,15 @@ public:
     // Turns an MCV into a construction yard ("fact", w x h footprint whose
     // top-left is one cell up-left of the MCV). Returns struct id or -1.
     int deployMcv(int unitId, int w, int h);
+
+    // --- sidebar Repair / Sell ---
+    // Structure id whose footprint covers `cell`, or -1.
+    int structureAt(int cell) const;
+    // Refund half the build cost, remove the structure (emits StructDied).
+    // Returns the credits refunded, or 0 if id is invalid.
+    int sellStructure(int id);
+    // Toggle the repair flag on a structure; returns the new state.
+    bool toggleRepair(int id);
 
     // Advance one tick: rotation, movement, cell hand-over, stuck handling,
     // combat (aim/fire), projectile flight, damage and deaths.
