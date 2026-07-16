@@ -32,6 +32,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <optional>
 #include <stdexcept>
@@ -41,12 +42,15 @@
 
 #include "formats/fnt.h"
 #include "formats/palette.h"
+#include "formats/sc_tileset.h"
 #include "formats/shp.h"
 #include "formats/tmp.h"
 #include "game/house.h"
 #include "game/map.h"
 #include "game/render.h"
 #include "game/rules.h"
+#include "game/sc_isom.h"
+#include "game/sc_render.h"
 #include "game/td_template_table.h"
 
 namespace {
@@ -1307,6 +1311,255 @@ int main(int argc, char** argv) {
             objects = resolveObjects(ed.map, art, remapFor);
             if (outArg)
                 saveMap(ed);
+        }
+
+        // ---- StarCraft-terrain demo (parallel format) ----
+        // Headless proof of the SC pivot: build an ISOM map, paint a plateau +
+        // lake + field, compile & repair, render SC megatiles sampled to our
+        // 24px cell, draw C&C units on top, round-trip the .scm, dump a BMP.
+        // Entirely separate from the C&C TMP path above.
+        if (flagArg(argc, argv, "--sc-demo")) {
+            std::string scDir = strArg(argc, argv, "--sc-tiles")
+                                    ? strArg(argc, argv, "--sc-tiles")
+                                    : "data/assets/starcraft/tileset/TileSet";
+            std::string scName = strArg(argc, argv, "--sc-tileset")
+                                     ? strArg(argc, argv, "--sc-tileset")
+                                     : "badlands";
+            auto scTs = fmt::ScTileset::load(scDir, scName);
+            game::ScIsom scTiles(scTs, game::badlandsBrush());
+            const int scW = 48, scH = 40;  // cells (24px), independent of C&C grid
+            game::ScIsomMap scMap(scTiles, scW, scH);
+            scMap.tilesetName = scName;
+            scMap.fill(2);                 // Dirt background
+            scMap.place(10, 10, 3, 8);     // high-dirt plateau (cliff)
+            scMap.place(10, 30, 5, 8);     // water lake (coastline)
+            scMap.place(16, 20, 6, 7);     // grass field
+            scMap.setAllChanged();
+            scMap.updateTiles();
+            scMap.repairNullTiles();
+
+            // Round-trip the parallel map format: save, peek+load into a fresh
+            // map, re-save, and byte-compare. This verifies the serialized ISOM
+            // diamond grid is lossless (compiled tiles differ only by the random
+            // subtile variant, which is not part of the format).
+            const char* scmPath = "renders/sc/cpp_mapedit_demo.scm";
+            const char* scmPath2 = "renders/sc/cpp_mapedit_demo_rt.scm";
+            scMap.save(scmPath);
+            std::string pkTs; int pkW = 0, pkH = 0;
+            bool okPeek = game::ScIsomMap::peek(scmPath, pkTs, pkW, pkH);
+            game::ScIsomMap reload(scTiles, pkW, pkH);
+            reload.load(scmPath);
+            reload.save(scmPath2);
+            auto readFile = [](const char* p) {
+                std::ifstream f(p, std::ios::binary);
+                return std::vector<char>((std::istreambuf_iterator<char>(f)),
+                                         std::istreambuf_iterator<char>());
+            };
+            bool ok = okPeek && readFile(scmPath) == readFile(scmPath2);
+            std::printf(".scm round-trip: tileset=%s %dx%d lossless=%s\n",
+                        pkTs.c_str(), pkW, pkH, ok ? "yes" : "NO");
+
+            // Render SC terrain at 24px, then draw C&C units on top.
+            SDL_FillRect(mapSurf, nullptr, 0xFF201822);
+            game::ScTerrainRenderer scRender(scTs, kTile);
+            scRender.draw(mc, scMap, 0, 0);
+            auto drawUnit = [&](const char* type, int cx, int cy, const char* house,
+                                int facing) {
+                const fmt::ShpFile* shp = art.shp(type);
+                if (!shp || shp->frames.empty()) return;
+                DrawObject o;
+                o.shp = shp;
+                o.remap = remapFor(house);
+                o.frame = game::facingToFrame(facing) % int(shp->frames.size());
+                if (hasTurret(type))
+                    o.turretFrame = 32 + game::facingToFrame(facing);
+                o.x = cx * kTile + kTile / 2 - shp->width / 2;
+                o.y = cy * kTile + kTile / 2 - shp->height / 2;
+                drawObject(mc, o, pal, 0, 0);
+            };
+            drawUnit("htnk", 8, 8, "BadGuy", 64);
+            drawUnit("mtnk", 20, 14, "GoodGuy", 160);
+            drawUnit("jeep", 14, 24, "GoodGuy", 32);
+            drawUnit("e1", 11, 12, "GoodGuy", 0);
+
+            const char* scShot = strArg(argc, argv, "--shot")
+                                     ? strArg(argc, argv, "--shot")
+                                     : "renders/sc/cpp_mapedit_sc_demo.bmp";
+            int ow = scW * kTile, oh = scH * kTile;
+            SDL_Surface* out = SDL_CreateRGBSurfaceWithFormat(0, ow, oh, 32,
+                                                              SDL_PIXELFORMAT_ARGB8888);
+            SDL_Rect src{0, 0, ow, oh}, dst{0, 0, ow, oh};
+            SDL_BlitSurface(mapSurf, &src, out, &dst);
+            if (SDL_SaveBMP(out, scShot) != 0)
+                throw std::runtime_error(SDL_GetError());
+            std::printf("wrote %s (%dx%d)\n", scShot, ow, oh);
+            SDL_FreeSurface(out);
+            SDL_DestroyWindow(win);
+            SDL_Quit();
+            return 0;
+        }
+
+        // ---- Interactive StarCraft-terrain paint mode (parallel editor) ----
+        // A second, self-contained editor loop for the SC ISOM terrain, entered
+        // with --sc. Left-drag paints the selected terrain type with a diamond
+        // brush; the ISOM module live-resolves cliffs/coasts; SC megatiles render
+        // at our 24px cell. Keeps the C&C TMP editor (below) fully intact.
+        // With --shot it paints a scripted stroke, screenshots, and exits so the
+        // paint->compile->render path is verifiable headlessly.
+        if (flagArg(argc, argv, "--sc")) {
+            std::string scDir = strArg(argc, argv, "--sc-tiles")
+                                    ? strArg(argc, argv, "--sc-tiles")
+                                    : "data/assets/starcraft/tileset/TileSet";
+            std::string scName = strArg(argc, argv, "--sc-tileset")
+                                     ? strArg(argc, argv, "--sc-tileset")
+                                     : "badlands";
+            auto scTs = fmt::ScTileset::load(scDir, scName);
+            game::ScIsom scTiles(scTs, game::badlandsBrush());
+            int scW = intArg(argc, argv, "--width", 64) & ~1;   // keep even
+            int scH = intArg(argc, argv, "--height", 64);
+            const char* scmOpen = strArg(argc, argv, "--open-scm");
+            std::string scmOut = strArg(argc, argv, "--out-scm")
+                                     ? strArg(argc, argv, "--out-scm")
+                                     : "data/custom/sc_level.scm";
+            if (scmOpen) {
+                std::string ts; int w, h;
+                if (game::ScIsomMap::peek(scmOpen, ts, w, h)) { scW = w; scH = h; }
+            }
+            game::ScIsomMap scMap(scTiles, scW, scH);
+            scMap.tilesetName = scName;
+            if (scmOpen && scMap.load(scmOpen)) { /* loaded */ }
+            else scMap.fill(2);  // Dirt
+
+            // Terrain-type brush palette (index -> ISOM terrainType, label).
+            struct ScBrushEntry { int tt; const char* name; };
+            const ScBrushEntry scBrushes[] = {
+                {2, "Dirt"}, {3, "High Dirt"}, {4, "Mud"},   {5, "Water"},
+                {6, "Grass"}, {7, "High Grass"}, {18, "Structure"},
+            };
+            int scSel = 1;         // default High Dirt (shows cliffs)
+            int scExtent = 8;      // diamond brush extent
+            game::ScTerrainRenderer scRender(scTs, kTile);
+
+            auto recompile = [&]() { scMap.updateTiles(); scMap.repairNullTiles(); };
+            // Map a canvas pixel (map space) to a valid ISOM diamond and paint.
+            auto paintAt = [&](int mapPxX, int mapPxY) {
+                int tx = mapPxX / kTile, ty = mapPxY / kTile;
+                int dx = tx / 2, dy = ty;
+                if (((dx + dy) & 1) != 0) ++dy;  // snap to a valid diamond
+                if (scMap.place(dx, dy, scBrushes[scSel].tt, scExtent)) {
+                    recompile();
+                    return true;
+                }
+                return false;
+            };
+
+            float scCamX = 0, scCamY = 0;
+            const int scHudW = 150;  // left HUD strip
+            bool scDirty = true, scPainting = false;
+            auto redraw = [&]() {
+                SDL_FillRect(mapSurf, nullptr, 0xFF201822);
+                scRender.draw(mc, scMap, 0, 0);
+                scDirty = false;
+            };
+            auto present = [&](SDL_Surface* wsurf) {
+                SDL_FillRect(wsurf, nullptr, 0xFF101014);
+                int vx = scHudW, vw = winW - scHudW, vh = winH;
+                int mapPx = 0;  // clamp camera
+                (void)mapPx;
+                scCamX = std::clamp(scCamX, 0.f, float(std::max(0, scW * kTile - vw)));
+                scCamY = std::clamp(scCamY, 0.f, float(std::max(0, scH * kTile - vh)));
+                SDL_Rect srcR{int(scCamX), int(scCamY),
+                              std::min(vw, scW * kTile - int(scCamX)),
+                              std::min(vh, scH * kTile - int(scCamY))};
+                SDL_Rect dstR{vx, 0, srcR.w, srcR.h};
+                SDL_BlitSurface(mapSurf, &srcR, wsurf, &dstR);
+                game::Canvas wc = game::Canvas::wrap(wsurf);
+                if (font) {
+                    int ty = 8;
+                    game::drawText(wc, *font, "SC TERRAIN", 8, ty, 0xFFFFFFFF);
+                    ty += 16;
+                    for (int i = 0; i < int(std::size(scBrushes)); ++i) {
+                        uint32_t col = (i == scSel) ? 0xFFFFE060 : 0xFFB0B0B0;
+                        game::drawText(wc, *font, scBrushes[i].name, 12, ty, col);
+                        ty += 14;
+                    }
+                    ty += 8;
+                    game::drawText(wc, *font, "brush " + std::to_string(scExtent),
+                                   8, ty, 0xFFB0B0B0);
+                    ty += 14;
+                    game::drawText(wc, *font, "1-7 type [ ] size", 8, ty, 0xFF808080);
+                    ty += 14;
+                    game::drawText(wc, *font, "Ctrl+S save  Esc quit", 8, ty, 0xFF808080);
+                }
+            };
+
+            // Scripted stroke for headless verification.
+            if (const char* shot = strArg(argc, argv, "--shot")) {
+                // Each place() resets the changed area, so recompile per stroke
+                // (exactly as the interactive paint path does).
+                scMap.place(scW / 3, scH / 3, 3, 10); recompile();      // plateau
+                scMap.place(scW / 3, 2 * scH / 3, 5, 10); recompile();  // lake
+                scMap.place(2 * scW / 3, scH / 2, 6, 8); recompile();   // grass
+                redraw();
+                SDL_Surface* wsurf = SDL_GetWindowSurface(win);
+                present(wsurf);
+                if (SDL_SaveBMP(wsurf, shot) != 0)
+                    throw std::runtime_error(SDL_GetError());
+                std::printf("wrote %s (scripted --sc stroke)\n", shot);
+                SDL_DestroyWindow(win);
+                SDL_Quit();
+                return 0;
+            }
+
+            bool scRun = true;
+            while (scRun) {
+                SDL_GetWindowSize(win, &winW, &winH);
+                int mx, my;
+                SDL_GetMouseState(&mx, &my);
+                SDL_Event e;
+                while (SDL_PollEvent(&e)) {
+                    if (e.type == SDL_QUIT) scRun = false;
+                    else if (e.type == SDL_KEYDOWN) {
+                        SDL_Keycode k = e.key.keysym.sym;
+                        bool ctrl = SDL_GetModState() & KMOD_CTRL;
+                        if (k == SDLK_ESCAPE) scRun = false;
+                        else if (k >= SDLK_1 && k <= SDLK_7)
+                            scSel = std::min<int>(k - SDLK_1, int(std::size(scBrushes)) - 1);
+                        else if (k == SDLK_LEFTBRACKET) scExtent = std::max(3, scExtent - 1);
+                        else if (k == SDLK_RIGHTBRACKET) scExtent = std::min(16, scExtent + 1);
+                        else if (k == SDLK_s && ctrl) {
+                            scMap.save(scmOut);
+                            std::printf("saved %s\n", scmOut.c_str());
+                        }
+                    } else if (e.type == SDL_MOUSEBUTTONDOWN &&
+                               e.button.button == SDL_BUTTON_LEFT && mx >= scHudW) {
+                        scPainting = true;
+                        if (paintAt(int(scCamX) + mx - scHudW, int(scCamY) + my))
+                            scDirty = true;
+                    } else if (e.type == SDL_MOUSEBUTTONUP &&
+                               e.button.button == SDL_BUTTON_LEFT) {
+                        scPainting = false;
+                    } else if (e.type == SDL_MOUSEMOTION && scPainting && mx >= scHudW) {
+                        if (paintAt(int(scCamX) + mx - scHudW, int(scCamY) + my))
+                            scDirty = true;
+                    }
+                }
+                const Uint8* keys = SDL_GetKeyboardState(nullptr);
+                float sp = 12;
+                if (keys[SDL_SCANCODE_A] || keys[SDL_SCANCODE_LEFT]) scCamX -= sp;
+                if (keys[SDL_SCANCODE_D] || keys[SDL_SCANCODE_RIGHT]) scCamX += sp;
+                if (keys[SDL_SCANCODE_W] || keys[SDL_SCANCODE_UP]) scCamY -= sp;
+                if (keys[SDL_SCANCODE_S] && !(SDL_GetModState() & KMOD_CTRL)) scCamY += sp;
+                if (keys[SDL_SCANCODE_DOWN]) scCamY += sp;
+                if (scDirty) redraw();
+                SDL_Surface* wsurf = SDL_GetWindowSurface(win);
+                present(wsurf);
+                SDL_UpdateWindowSurface(win);
+                SDL_Delay(16);
+            }
+            SDL_DestroyWindow(win);
+            SDL_Quit();
+            return 0;
         }
 
         // Study render: dump the whole map's terrain (no editor UI, cropped to

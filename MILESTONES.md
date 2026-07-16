@@ -489,7 +489,7 @@ dir is truncated `TEMPERAT` but palette base is `temperat`. TD TMP has no land
 control map, so sim passability must come from the template table, not the tile.
 House names: GoodGuy=GDI, BadGuy=Nod, Neutral=civilian.
 
-## Phase 11 — StarCraft terrain for the editor 🚧 (started 2026-07-15, session 16)
+## Phase 11 — StarCraft terrain for the editor ✅ (session 16 research, session 17 C++ port)
 
 The C&C terrain editor is janky because C&C's shore/cliff art is hand-authored
 3×3 macro-blocks, hostile to per-cell auto-tiling. **Decision (user):** replace
@@ -508,11 +508,25 @@ personal-use only, gitignored under `data/` — never committed.
       reference `TheNitesWhoSay/IsomTerrain` (`IsomApi.h`). Paint a terrain type
       with a diamond brush → StarEdit-identical cliffs, coastlines, and fields
       auto-tile. Validated visually (`renders/sc/isom_paint_demo.png`).
-- [ ] Fix junction hash-misses when two features are painted directly adjacent
-      (black tiles at incompatible-terrain corners).
-- [ ] Port the tileset loader + ISOM to C++ as a new parallel map format.
-- [ ] Editor paint mode: brush terrain types, live auto-resolve, render with
-      C&C units on top.
+- [x] Diagnosed junction hash-misses (black tiles where two features touch):
+      **genuinely-invalid SC adjacency, not a bug** — the MIT reference's
+      `updateTileFromIsom` also emits tile 0 on a hash miss, and spacing the
+      features apart yields zero nulls. Added an opt-in `repairNullTiles()`
+      quality pass (copies a compiled vertical neighbor) that the editor runs
+      after compile so junctions blend instead of showing black.
+- [x] **Ported the tileset loader + ISOM to C++** as a parallel system:
+      `src/formats/sc_tileset.{h,cpp}` (cv5/vx4ex/vr4/wpe → megatiles; verified
+      pixel-identical to `sc_tiles.py` via `sctileview`), `src/game/sc_isom.{h,cpp}`
+      (faithful ISOM port; `scisomview` reproduces the paint demo, isomLinks
+      count 125 & typed groups 1425 match Python exactly), and the `.scm`
+      parallel map format (ISOM diamond grid + tileset name; lossless round-trip).
+- [x] Editor paint mode: `src/game/sc_render.{h,cpp}` samples SC megatiles
+      32→24px onto the engine grid; `mapedit --sc-demo` (headless) paints a
+      plateau/lake/field, compiles+repairs, renders at 24px with **C&C units
+      drawn on top** (house-colored), round-trips the `.scm`, dumps a BMP;
+      `mapedit --sc` is the interactive diamond-brush paint loop (1-7 pick
+      terrain, `[`/`]` brush size, Ctrl+S save, live ISOM resolve). C&C TMP path
+      untouched.
 
 ---
 
@@ -537,6 +551,27 @@ carries the delta. Update this file's checkboxes *before* writing a handoff.
 
 ### Session log
 
+- **2026-07-16 (session 17): StarCraft-terrain C++ port (Phase 11 complete).**
+  Ported the validated Python prototype to C++ in four verified layers.
+  (1) **Tileset loader** `src/formats/sc_tileset.{h,cpp}` — decodes cv5/vx4ex/
+  vr4/wpe and renders megatiles; `sctileview` dumps a sheet BMP that is
+  **pixel-identical** to `sc_tiles.py` (ImageChops diff empty). (2) **ISOM
+  module** `src/game/sc_isom.{h,cpp}` — a straight port of `sc_isom.py`
+  (14 shapes, generateIsomLinks + terrainTypeMap + hash map, place/radial/
+  findBestMatch, compile with stack propagation, badlands brush table);
+  `scisomview` reproduces the paint demo, and isomLinks=125 / typed-groups=1425
+  match Python exactly. (3) **Junction hash-misses diagnosed** — confirmed
+  against the MIT reference (`updateTileFromIsom` emits tile 0 on a hash miss)
+  and empirically (features spaced apart → 0 nulls) that these are genuinely-
+  invalid SC adjacency, not a bug; added opt-in `repairNullTiles()`. (4) **Editor
+  integration** — `.scm` parallel map format (diamond grid + tileset, lossless
+  round-trip), `sc_render.{h,cpp}` (32→24px megatile sampling with cache),
+  `mapedit --sc-demo` (headless: SC terrain @24px + house-colored C&C units on
+  top), and `mapedit --sc` interactive diamond-brush paint mode. C&C TMP/theater
+  path and all gameplay untouched. Renders in `renders/sc/cpp_*` (gitignored).
+  **Next:** port the other 7 tilesets' brush tables from `IsomApi.h`; wire the
+  SC map into the actual game load path (or an editor toggle from the C&C UI);
+  human smoke-test of live `--sc` mouse painting.
 - **2026-07-15 (session 16): map-editor terrain → StarCraft pivot (Phase 11).**
   Started by building a **smart coastline** auto-tiler in `mapedit` (SEA
   category: paint a water field, marching-squares picks TD shore icons harvested

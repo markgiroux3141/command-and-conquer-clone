@@ -15,6 +15,7 @@ add_library(formats STATIC
     src/formats/ini.cpp
     src/formats/lcw.cpp
     src/formats/palette.cpp
+    src/formats/sc_tileset.cpp
     src/formats/shp.cpp
     src/formats/shpd2.cpp
     src/formats/tmp.cpp
@@ -27,6 +28,8 @@ add_library(game STATIC
     src/game/map.cpp
     src/game/render.cpp
     src/game/rules.cpp
+    src/game/sc_isom.cpp
+    src/game/sc_render.cpp
     src/game/sim.cpp
 )
 target_link_libraries(game PUBLIC formats SDL2::SDL2)
@@ -56,6 +59,12 @@ target_link_libraries(mapconv PRIVATE game)
 
 add_executable(mapedit src/tools/mapedit.cpp)
 target_link_libraries(mapedit PRIVATE game SDL2::SDL2 SDL2::SDL2main)
+
+add_executable(sctileview src/tools/sctileview.cpp)
+target_link_libraries(sctileview PRIVATE formats)
+
+add_executable(scisomview src/tools/scisomview.cpp)
+target_link_libraries(scisomview PRIVATE game)
 
 # SDL2.dll next to the executables
 add_custom_command(TARGET shpview POST_BUILD

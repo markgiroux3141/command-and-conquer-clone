@@ -1,87 +1,83 @@
-# Handoff — session 16 → 17: StarCraft-terrain C++ port (written 2026-07-15)
+# Handoff — session 17 → 18: StarCraft terrain in-engine (written 2026-07-16)
 
-Session 16 pivoted the **map editor's terrain** from C&C's hand-authored art to
-**StarCraft tiles + StarCraft's faithful ISOM auto-tiling**. The risky research
-is done and **validated in Python**; session 17 ports it to C++ in the engine.
-C&C buildings/units/vehicles and all gameplay are untouched — this is a parallel
-terrain system for the editor.
+Session 17 **completed the C++ port** of the StarCraft-terrain editor pivot
+(Phase 11). The tileset loader, the faithful ISOM auto-tiler, the `.scm`
+parallel map format, the 24px renderer, and both a headless demo and an
+interactive paint mode all exist in the engine and are verified. C&C
+buildings/units/vehicles, the `TMP`/theater path, and all gameplay are
+untouched — this is a parallel editor terrain system.
 
 ## Read first
 
-1. User memory `starcraft-terrain-pivot` — the full decision, SC tile format
-   (`cv5/vx4ex/vr4/vf4/wpe`), and the ISOM algorithm/pipeline notes. **Start here.**
-2. `MILESTONES.md` Phase 11 — the checklist (what's done / next).
-3. `tools/sc_tiles.py` (tile decoder) and `tools/sc_isom.py` (the ISOM port to
-   translate to C++). These two ARE the spec — the C++ is a straight port.
-4. Reference: MIT `TheNitesWhoSay/IsomTerrain`, file `IsomTerrain/IsomApi.h`
-   (re-clone to a scratch dir if needed: `git clone --depth 1
-   https://github.com/TheNitesWhoSay/IsomTerrain`). All brush tables + algorithm
-   live in that one header; `sc_isom.py` already ports badlands.
+1. User memory `starcraft-terrain-pivot` — full decision, SC tile format, ISOM
+   algorithm, **and the s17 C++ port + junction-diagnosis notes**. Start here.
+2. `MILESTONES.md` Phase 11 (now ✅) + the session-17 log entry.
+3. The C++ source (all new this session):
+   - `src/formats/sc_tileset.{h,cpp}` — cv5/vx4ex/vr4/wpe decode + megatile render.
+   - `src/game/sc_isom.{h,cpp}` — faithful ISOM port + `.scm` save/load + `repairNullTiles`.
+   - `src/game/sc_render.{h,cpp}` — SC megatile 32→24px sampling into a Canvas.
+   - `src/tools/sctileview.cpp`, `scisomview.cpp` — headless verify tools.
+   - `mapedit --sc-demo` / `--sc` blocks in `src/tools/mapedit.cpp`.
+4. Python spec (still the reference for porting the *other* tilesets):
+   `tools/sc_tiles.py`, `tools/sc_isom.py`, and MIT `IsomApi.h`
+   (re-clone if the scratchpad copy is gone:
+   `git clone --depth 1 https://github.com/TheNitesWhoSay/IsomTerrain`).
 
-## What works now (Python, validated)
+## What works now (C++, verified)
 
-- `python tools/sc_tiles.py badlands --count 256` → `renders/sc/*.png` (megatiles).
-- `python tools/sc_isom.py` → `renders/sc/isom_paint_demo.png`: a blank dirt map
-  with a painted high-dirt **plateau (cliffs)**, a **water lake (coastline)**, and
-  a **grass field** — all auto-tiled exactly like StarEdit. This is the proof the
-  approach works. Read that PNG first to see the target quality.
+- `sctileview data/assets/starcraft/tileset/TileSet badlands --count 256 --out X.bmp`
+  → **pixel-identical** to `sc_tiles.py` (ImageChops diff empty).
+- `scisomview` → `renders/sc/cpp_isom_paint_demo.bmp`: cliffs/coast/field,
+  isomLinks=125 & typed-groups=1425 (match Python). `--repair` clears junctions;
+  `--grass X Y` moves the field (far apart → 0 nulls, proving the diagnosis).
+- `mapedit <td-root> --sc-demo` → `renders/sc/cpp_mapedit_sc_demo.bmp`: SC terrain
+  at 24px with **house-colored C&C units on top**; `.scm` round-trip lossless.
+- `mapedit <td-root> --sc [--width W --height H] [--shot X.bmp] [--open-scm f]
+  [--out-scm f]` — interactive diamond-brush paint (1-7 terrain, `[`/`]` brush,
+  WASD scroll, Ctrl+S save). `--shot` paints a scripted stroke and exits (headless).
 
-## SC tile format (confirmed by file sizes)
+## Junction black tiles — RESOLVED (not a bug)
 
-Files in `data/assets/starcraft/tileset/TileSet/<name>.{cv5,vx4ex,vr4,vf4,wpe}`
-(gitignored). VR4 = 8×8 minitile, 64 B. VX4EX = megatile = 16 minitile refs, each
-`u32` (bit0 = hflip, index = ref>>1), 64 B. CV5 = 52-B tile groups: `u16
-terrainType, u8 build, u8 height, u16 links[L,T,R,B], u16 stackConnections[L,T,R,B],
-u16 megaTileIndex[16]`. Map cell = `(group<<4)|subtile`; megatile =
-`cv5[group].megaTileIndex[subtile]`. WPE = 256×4 B RGB(pad) palette. Each cv5
-group is one terrain role with up to 16 random variants.
+Two incompatible terrains one diamond apart → ISOM rect with no matching tile
+group → hash miss → tile 0 (black). The MIT reference does the same; spacing
+apart gives 0 nulls. Editor fix: opt-in `ScIsomMap::repairNullTiles()` (copies a
+compiled vertical neighbor) run after `updateTiles`.
 
-## NEXT — session 17 tasks, in order
+## NEXT — session 18 candidates (in rough priority)
 
-1. **C++ SC tileset loader** (`src/formats/sc_tileset.{h,cpp}` or similar): parse
-   cv5/vx4ex/vr4/wpe; expose "render megatile N → 32×32 indexed/RGB". Verify by
-   dumping a tilesheet BMP and comparing to `sc_tiles.py`'s output.
-2. **C++ ISOM module** (`src/game/sc_isom.{h,cpp}`): straight port of
-   `tools/sc_isom.py` (which itself faithfully ports `IsomApi.h`). Keep the same
-   structure: TileGroup, the 14 Shapes, Link/LinkId, per-tileset TerrainTypeInfo
-   + terrainTypeMap (port badlands first, then the rest from IsomApi.h), then
-   `loadIsom` (hashToGroup + generateIsomLinks + terrainTypeMap), `place`
-   (brush→setDiamond→radial), `updateTiles` (diamond hash→group + stack + random
-   subtile). Validate by reproducing the same paint demo headlessly.
-3. **Fix junction hash-misses**: in the Python demo, painting two features
-   directly adjacent leaves black tiles at incompatible-terrain corners (e.g.
-   high-dirt touching water). Add test cases; likely a `generateIsomLinks` /
-   hash edge case (or genuinely-invalid SC adjacency the brush should prevent).
-   Chase this during/after the C++ port with more paint configurations.
-4. **New parallel map format + editor paint mode**: a map that stores the ISOM
-   diamond grid + tileset id (not C&C template/icon). In `mapedit`, add a mode
-   that paints terrain types with a diamond brush, live-resolves via the ISOM
-   module, and renders SC megatiles (sampled 32→24 px) with C&C units on top.
-   Keep the C&C `TMP` path and all existing categories intact.
-
-## Verification recipe
-
-- Python target to match: `python tools/sc_isom.py` then Read
-  `renders/sc/isom_paint_demo.png` (cliffs/coast/fields, minor black junction).
-- For the C++ loader/ISOM: add a headless `--render`-style BMP dump (as mapedit
-  already has for C&C terrain) and Read the PNG; it should match the Python demo.
+1. **Other 7 tilesets' brush tables**: only `badlandsBrush()` is ported. Port
+   `terrainTypeInfo` + `terrainTypeMap` for space/installation/ashworld/jungle/
+   desert/arctic/twilight from `IsomApi.h` (jungle/desert/arctic/twilight share
+   Jungle's map — see the Span aliases at IsomApi.h ~964-1072). Add a
+   `--sc-tileset` smoke render for each.
+2. **Wire `.scm` into a real flow**: either a game load path for SC-terrain maps,
+   or an editor toggle to switch the *existing* C&C level between TMP and SC
+   terrain. Decide with the user — the `.scm` currently only stores terrain, not
+   C&C objects/spawns, so a combined map format may be wanted.
+3. **Human smoke-test** live `--sc` mouse painting (only the scripted `--shot`
+   path is auto-verified; the mouse→diamond mapping and drag-paint need eyes).
+4. Consider the reference's extra stack-top walk in `updateTileFromIsom`
+   (IsomApi.h 2205-2218) — our port simplified it; fine for the demos but may
+   matter for tall multi-level cliffs.
 
 ## Gotchas / constraints
 
-- **SC assets are personal-use only** — `data/` (and `renders/`) are gitignored;
-  never commit tiles/palettes. (Memory `cnc-clone-personal-use-only`.)
-- **Keep C&C intact.** The SC terrain is a *second* map format behind a flag;
-  don't disturb the `TMP`/theater path, object categories, or gameplay.
-- SC tiles are 32px; our cell/grid/units are 24px. Sample SC megatiles down to
-  24 for display; keep the logical grid + pathfinding at 24 (don't move units).
-- `.vx4ex` (not `.vx4`) in SC:R — 4 bytes per minitile ref (u32), not 2.
-- Small elevated brushes collapse to background (SC min feature size); the paint
-  demo uses brushExtent ≥ ~7. Recompile the whole map (`set_all_changed` +
-  `updateTiles`) after a batch of paints, or call updateTiles per paint.
-- The coast auto-tiler from earlier this session lives in `mapedit.cpp` (SEA
-  category) — superseded but left in place; don't confuse it with the SC work.
+- **SC assets personal-use only** — `data/` and `renders/` are gitignored;
+  never commit tiles/palettes/`.scm`/BMPs. (Memory `cnc-clone-personal-use-only`.)
+- **Keep C&C intact** — SC terrain is a *parallel* system behind `--sc`/`--sc-demo`.
+- SC tiles are 32px; grid/units stay 24px (sample down for display only).
+- `.vx4ex` (u32 refs), not `.vx4`, in SC:R.
+- After a *batch* of `place()` calls, either recompile per-place or call
+  `setAllChanged()` before `updateTiles()` — each `place()` resets the changed
+  area, so one trailing `updateTiles()` compiles only the last stroke.
+- `ScIsomMap` subtile choice uses a per-map xorshift RNG, so compiled *tiles*
+  differ run-to-run in the random variant (not the group). `.scm` stores the
+  diamond grid (deterministic), so its round-trip is byte-lossless; compare
+  group ids, not full cells, if diffing compiled output.
+- Build: VS 2022 generator, `cmake --build build --target <t> --config Release`.
+  New CMake targets: `sctileview`, `scisomview` (+ SC sources in the libs).
 
 ## Context handoff protocol
 
-At ~75% context: tick `MILESTONES.md` (Phase 11), add a session-log entry,
-rewrite this file, commit and push.
+At ~75% context: tick `MILESTONES.md` (done), add a session-log entry (done),
+rewrite this file (done), commit + push (pending user OK).
