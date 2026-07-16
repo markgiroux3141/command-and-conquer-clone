@@ -51,6 +51,12 @@ target_link_libraries(auddump PRIVATE formats)
 add_executable(mapview src/tools/mapview.cpp)
 target_link_libraries(mapview PRIVATE game SDL2::SDL2 SDL2::SDL2main)
 
+add_executable(mapconv src/tools/mapconv.cpp)
+target_link_libraries(mapconv PRIVATE game)
+
+add_executable(mapedit src/tools/mapedit.cpp)
+target_link_libraries(mapedit PRIVATE game SDL2::SDL2 SDL2::SDL2main)
+
 # SDL2.dll next to the executables
 add_custom_command(TARGET shpview POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different

@@ -66,11 +66,13 @@ def parse_slopes(text):
 
 
 def parse_constructors(text):
-    """Map TEMPLATE_* enum name -> (art, theater mask, land, altLand, altSlope).
+    """Map TEMPLATE_* enum name -> (art, theater mask, land, altLand, altSlope,
+    width, height).
 
     Constructor arg order (TYPE.H): iconset, theater, ininame, fullname, land,
-    width, height, altland, alticons. `alticons` is NULL or a cast pointer to a
-    _slope* exception list whose icons take `altland` instead of `land`.
+    width, height, altland, alticons. `width`/`height` are the template's icon
+    footprint (cells). `alticons` is NULL or a cast pointer to a _slope*
+    exception list whose icons take `altland` instead of `land`.
     """
     pat = re.compile(
         r"TemplateTypeClass\s+const\s+\w+\s*\(\s*"
@@ -79,13 +81,13 @@ def parse_constructors(text):
         r'"([^"]+)"\s*,\s*'          # 3 art name
         r"\w+\s*,\s*"                #   fullname (TXT_*)
         r"(LAND_\w+)\s*,\s*"         # 4 land
-        r"\d+\s*,\s*\d+\s*,\s*"      #   width, height
-        r"(LAND_\w+)\s*,\s*"         # 5 altland
-        r"([^;]+?)\s*\)\s*;",        # 6 alticons expression
+        r"(\d+)\s*,\s*(\d+)\s*,\s*"  # 5,6 width, height (icons)
+        r"(LAND_\w+)\s*,\s*"         # 7 altland
+        r"([^;]+?)\s*\)\s*;",        # 8 alticons expression
         re.S,
     )
     table = {}
-    for enum_name, flags, art, land, altland, alticons in pat.findall(text):
+    for enum_name, flags, art, land, width, height, altland, alticons in pat.findall(text):
         mask = 0
         for f in flags.split("|"):
             f = f.strip()
@@ -93,7 +95,8 @@ def parse_constructors(text):
                 mask |= THEATER_BITS[f]
         m = re.search(r"_slope\w+", alticons)
         alt_slope = m.group(0) if m else None
-        entry = (art, mask, LAND_TO_GAME[land], LAND_TO_GAME[altland], alt_slope)
+        entry = (art, mask, LAND_TO_GAME[land], LAND_TO_GAME[altland], alt_slope,
+                 int(width), int(height))
         if enum_name in table and table[enum_name] != entry:
             # Empty/Clear both map to TEMPLATE_CLEAR1 with identical data.
             sys.exit(f"conflicting definitions for {enum_name}: "
@@ -116,7 +119,7 @@ def main():
     # Emit only the exception lists actually referenced, in first-use order.
     used_slopes = []
     for n in enum_names:
-        alt_slope = ctors.get(n, ("", 0, 0, 0, None))[4]
+        alt_slope = ctors.get(n, ("", 0, 0, 0, None, 1, 1))[4]
         if alt_slope and alt_slope not in used_slopes:
             used_slopes.append(alt_slope)
 
@@ -142,6 +145,8 @@ def main():
         "    uint8_t land;             // default game::Land value for the template's icons",
         "    uint8_t altLand;          // game::Land value for the altIcons exception list",
         "    const int8_t* altIcons;   // -1-terminated icon indices taking altLand; null=none",
+        "    uint8_t width;            // template footprint in cells (icons per row)",
+        "    uint8_t height;           // template footprint in cells (rows)",
         "};",
         "",
         "// Per-template icon exception lists (TemplateTypeClass AltIcons); the listed",
@@ -156,10 +161,12 @@ def main():
         "inline constexpr TdTemplateInfo kTdTemplateTable[] = {",
     ]
     for i, n in enumerate(enum_names):
-        art, mask, land, altland, alt_slope = ctors.get(n, ("", 0, 0, 0, None))
+        art, mask, land, altland, alt_slope, width, height = ctors.get(
+            n, ("", 0, 0, 0, None, 1, 1))
         alt_ptr = f"kTdAlt{alt_slope}" if alt_slope else "nullptr"
         lines.append(
-            f'    {{"{art.lower()}", {mask}, {land}, {altland}, {alt_ptr}}},'
+            f'    {{"{art.lower()}", {mask}, {land}, {altland}, {alt_ptr}, '
+            f'{width}, {height}}},'
             f'  // {i} {n}')
     lines += [
         "};",

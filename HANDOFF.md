@@ -1,122 +1,87 @@
-# Handoff — session 15 → Track B continued (AI depth) (written 2026-07-14)
+# Handoff — session 16 → 17: StarCraft-terrain C++ port (written 2026-07-15)
 
-Session 15 landed **awake-AI structure** (Track B item #1): the AI that runs on
-skirmish maps and on campaign houses woken by a Production/Autocreate trigger now
-builds a parsed `[Base]` list in order and attacks on a difficulty-driven
-`AlertTime` cadence, instead of a hardcoded tech-chain + fixed timer. Shipped,
-verified, and (about to be) pushed to main.
+Session 16 pivoted the **map editor's terrain** from C&C's hand-authored art to
+**StarCraft tiles + StarCraft's faithful ISOM auto-tiling**. The risky research
+is done and **validated in Python**; session 17 ports it to C++ in the engine.
+C&C buildings/units/vehicles and all gameplay are untouched — this is a parallel
+terrain system for the editor.
 
 ## Read first
 
-1. `MILESTONES.md` — Phase 7 "Awake-AI structure — [Base] + difficulty
-   AlertTime" is the new ticked item; the session-15 log is the delta.
-2. `docs/original-source/06-houses-ai-missions.md` — §6 `HouseClass::AI`
-   (`AlertTime` cadence, `Suggest_New_Object` / `Base.Next_Buildable`), §5
-   FactoryClass, §7 reinforcements (`Do_Reinforcements` — next task).
-3. User memory `ai-campaign-fidelity-gap` — updated with this session's work.
+1. User memory `starcraft-terrain-pivot` — the full decision, SC tile format
+   (`cv5/vx4ex/vr4/vf4/wpe`), and the ISOM algorithm/pipeline notes. **Start here.**
+2. `MILESTONES.md` Phase 11 — the checklist (what's done / next).
+3. `tools/sc_tiles.py` (tile decoder) and `tools/sc_isom.py` (the ISOM port to
+   translate to C++). These two ARE the spec — the C++ is a straight port.
+4. Reference: MIT `TheNitesWhoSay/IsomTerrain`, file `IsomTerrain/IsomApi.h`
+   (re-clone to a scratch dir if needed: `git clone --depth 1
+   https://github.com/TheNitesWhoSay/IsomTerrain`). All brush tables + algorithm
+   live in that one header; `sc_isom.py` already ports badlands.
 
-## What session 15 changed (all deterministic, `tickCount_`-keyed)
+## What works now (Python, validated)
 
-Decisions confirmed with the user before building: default difficulty **Normal**,
-a global **`--difficulty`** flag, **hybrid** base-building.
+- `python tools/sc_tiles.py badlands --count 256` → `renders/sc/*.png` (megatiles).
+- `python tools/sc_isom.py` → `renders/sc/isom_paint_demo.png`: a blank dirt map
+  with a painted high-dirt **plateau (cliffs)**, a **water lake (coastline)**, and
+  a **grass field** — all auto-tiled exactly like StarEdit. This is the proof the
+  approach works. Read that PNG first to see the target quality.
 
-1. **`[Base]` parsed + threaded** (`map.{h,cpp}`): `parseScripting` reads the
-   `[Base]` section (`Count=N`, then `NNN=TYPE,COORD` in index/build order). The
-   COORD is a packed lepton coordinate — decoded with `Coord_Cell` (FUNCTION.H):
-   `cell_x=(c>>8)&0xff`, `cell_y=(c>>24)&0xff`, engine cell `= cell_y*128+cell_x`
-   (correct for both TD 64-wide and RA). Stored in `MapFile::base`
-   (`{type, cell}` in build order). `game_main.cpp` hands it to the house
-   *opposite* the player (`baseHouse`, per BASE.CPP) via `Sim::setBaseList`.
-2. **Next_Buildable base-building** (`sim.{h,cpp}`): `Sim::aiNextBaseNode(house)`
-   returns the first list node the house owns fewer of than the list requires up
-   to that point (robust to exact placement). `tickAI` step 3 is now **hybrid**:
-   if a `[Base]` list exists, build/rebuild it in order (placing each at its
-   scripted cell when free, else near the base); with no list, fall back to the
-   old MCV-deploy + power→proc→barracks→factory chain (our `scm*` skirmish maps
-   ship `[Base] Count=0`, so they use the fallback and stay playable).
-3. **Difficulty + AlertTime** (`sim.{h,cpp}`, `game_main.cpp`): `Sim::Difficulty
-   {Easy,Normal,Hard}` + `setDifficulty`, set from `--difficulty` (default
-   Normal). `Sim::alertTime(house)` replaces the fixed 450 attack timer with the
-   per-tier range (Easy 16-40 min, Normal 5-20, Hard 4-10 — expressed in AI-think
-   ticks, since `tickAI` runs ~1/s), drawn by a deterministic FNV hash of
-   house+`tickCount_` (no RNG). The cooldown is **seeded once at wake** so the
-   first wave waits out a full cadence rather than rushing. Per-difficulty
-   starting stipend (Easy 3000 / Normal 5000 / Hard 8000; `--ai-credits` still
-   overrides).
+## SC tile format (confirmed by file sizes)
 
-## Current state (what compiles / plays)
+Files in `data/assets/starcraft/tileset/TileSet/<name>.{cv5,vx4ex,vr4,vf4,wpe}`
+(gitignored). VR4 = 8×8 minitile, 64 B. VX4EX = megatile = 16 minitile refs, each
+`u32` (bit0 = hflip, index = ref>>1), 64 B. CV5 = 52-B tile groups: `u16
+terrainType, u8 build, u8 height, u16 links[L,T,R,B], u16 stackConnections[L,T,R,B],
+u16 megaTileIndex[16]`. Map cell = `(group<<4)|subtile`; megatile =
+`cv5[group].megaTileIndex[subtile]`. WPE = 256×4 B RGB(pad) palette. Each cv5
+group is one terrain role with up to 16 random variants.
 
-- Builds clean: `cmake --build build --config Release --target game_exe`.
-- **Determinism preserved.** scg03ea `--sim-ticks 8000 --ai --difficulty hard`
-  is byte-identical across two runs; scg01ea (no woken AI) is byte-identical to
-  the *committed* baseline (proof: stashed my diff, rebuilt, same hash).
-- **Baseline note:** the old handoff's scg01ea sha1 `9C500155…` is **stale** —
-  the committed HEAD now hashes `09041a48f364d64c7163461c8116d4850429fe67`
-  (drift predates this session; my diff does not touch the scg01ea path). Use
-  `09041a48…` as the new reference, or just check "twice = identical".
+## NEXT — session 17 tasks, in order
+
+1. **C++ SC tileset loader** (`src/formats/sc_tileset.{h,cpp}` or similar): parse
+   cv5/vx4ex/vr4/wpe; expose "render megatile N → 32×32 indexed/RGB". Verify by
+   dumping a tilesheet BMP and comparing to `sc_tiles.py`'s output.
+2. **C++ ISOM module** (`src/game/sc_isom.{h,cpp}`): straight port of
+   `tools/sc_isom.py` (which itself faithfully ports `IsomApi.h`). Keep the same
+   structure: TileGroup, the 14 Shapes, Link/LinkId, per-tileset TerrainTypeInfo
+   + terrainTypeMap (port badlands first, then the rest from IsomApi.h), then
+   `loadIsom` (hashToGroup + generateIsomLinks + terrainTypeMap), `place`
+   (brush→setDiamond→radial), `updateTiles` (diamond hash→group + stack + random
+   subtile). Validate by reproducing the same paint demo headlessly.
+3. **Fix junction hash-misses**: in the Python demo, painting two features
+   directly adjacent leaves black tiles at incompatible-terrain corners (e.g.
+   high-dirt touching water). Add test cases; likely a `generateIsomLinks` /
+   hash edge case (or genuinely-invalid SC adjacency the brush should prevent).
+   Chase this during/after the C++ port with more paint configurations.
+4. **New parallel map format + editor paint mode**: a map that stores the ISOM
+   diamond grid + tileset id (not C&C template/icon). In `mapedit`, add a mode
+   that paints terrain types with a diamond brush, live-resolves via the ISOM
+   module, and renders SC megatiles (sampled 32→24 px) with C&C units on top.
+   Keep the C&C `TMP` path and all existing categories intact.
 
 ## Verification recipe
 
-```
-cmake --build build --config Release --target game_exe
+- Python target to match: `python tools/sc_isom.py` then Read
+  `renders/sc/isom_paint_demo.png` (cliffs/coast/fields, minor black junction).
+- For the C++ loader/ISOM: add a headless `--render`-style BMP dump (as mapedit
+  already has for C&C terrain) and Read the PNG; it should match the Python demo.
 
-# Determinism (run twice, hash stdout — must match, not necessarily the old sha):
-build\Release\game.exe data\assets\tiberian_dawn\gdi\GENERAL\scg03ea.ini ^
-  data\assets\tiberian_dawn\gdi --house GoodGuy --no-shroud --sim-ticks 8000 ^
-  --ai --difficulty hard
+## Gotchas / constraints
 
-# Fidelity: on scg03ea the woken Nod (Production trigger @ tick 270) should keep
-# all 15 prebuilt structures (intact [Base] => Next_Buildable builds nothing),
-# train from its Hand of Nod, and launch a wave ~tick 6300 (hard). Grep the
-# "after:" lines for BadGuy: structs unchanged, some units tagged (attacking).
-# Try --difficulty normal to see the wave land much later (~tick 17550).
-```
-
-To re-run the throwaway lib test (it was removed): re-create
-`src/tools/basetest.cpp` (a `game`-linked exe) covering `[Base]` parse,
-`aiNextBaseNode` ordering, `alertTime` cadence-by-difficulty, and the no-`[Base]`
-fallback — add a temp `basetest` target to `CMakeLists.txt`, build, run, remove.
-
-## NEXT — Track B continued (as the user directs)
-
-In `MILESTONES.md` Phase 7 "polish / known gaps", rough impact order:
-1. **Reinforcements at the map edge/shore via waypoints** (`Do_Reinforcements`
-   REINF.CPP:63). Today `spawnTeam` spawns near the base; the original enters
-   from a waypoint / map edge (or by LST naval / A-plane) and drives on.
-2. **RA-format campaign scripting** — RA's numeric trigger event/action format
-   isn't matched by the TD-shaped string checks, so RA missions still run the
-   old skirmish AI. Add an RA trigger parser path if RA fidelity matters.
-3. **Broaden trigger coverage**: superweapons (Ion/Nuke/Airstrike), `Built It`,
-   `Discovered`, `Credits`, cell triggers, trigger-chaining.
-4. **AI depth**: *defensive*-structure building (gun/gtwr/obli/sam) beyond what
-   `[Base]` scripts.
-
-Later Phase 8: in-game OPTIONS menu (stub), save/load; more EVA cues.
-
-## Gotchas / constraints (unchanged + new)
-
-- **Determinism is sacred.** `alertTime` uses a deterministic FNV hash of
-  house+`tickCount_` — no wall-clock / unseeded RNG. Re-verify byte-identical
-  `--sim-ticks --ai` runs after any sim change.
-- **`tickAI` runs ~once per 15 ticks** (once/sec), so `aiAttackCd_` counts
-  *seconds* (AI-think units), not raw ticks — that's why `alertTime` ranges are
-  in think-units. (The old `kAttackPeriod=450` comment claiming "~30s" was
-  wrong; it was really 450 s.)
-- **`[Base]` COORD is a lepton coordinate**, not a cell — decode it, don't feed
-  it to `cellFn`. `Move to Cell` team steps still use the raw INI cell (unrelated
-  TODO).
-- The scg03ea `[Base]` is the enemy's *prebuilt* base, so on a normal run the AI
-  rebuilds only what combat destroys. To see it build from scratch, use a map
-  where the woken house has a ConYard but a gap in its base.
-- **Do not commit the user's pending map-editor work.** The tree also carries
-  unrelated uncommitted changes (`CMakeLists.txt`, `td_template_table.h`,
-  `tools/gen_td_template_table.py`, untracked `src/tools/mapconv.cpp`,
-  `mapedit.cpp`, `docs/REFACTOR_PLAN.md`) — the Phase 9 side-quest. Stage only
-  the AI files (`src/game/map.{h,cpp}`, `src/game/sim.{h,cpp}`,
-  `src/game_main.cpp`) + the two docs.
-- Exe target is `game_exe` (`OUTPUT_NAME game`); `game` alone builds the lib.
+- **SC assets are personal-use only** — `data/` (and `renders/`) are gitignored;
+  never commit tiles/palettes. (Memory `cnc-clone-personal-use-only`.)
+- **Keep C&C intact.** The SC terrain is a *second* map format behind a flag;
+  don't disturb the `TMP`/theater path, object categories, or gameplay.
+- SC tiles are 32px; our cell/grid/units are 24px. Sample SC megatiles down to
+  24 for display; keep the logical grid + pathfinding at 24 (don't move units).
+- `.vx4ex` (not `.vx4`) in SC:R — 4 bytes per minitile ref (u32), not 2.
+- Small elevated brushes collapse to background (SC min feature size); the paint
+  demo uses brushExtent ≥ ~7. Recompile the whole map (`set_all_changed` +
+  `updateTiles`) after a batch of paints, or call updateTiles per paint.
+- The coast auto-tiler from earlier this session lives in `mapedit.cpp` (SEA
+  category) — superseded but left in place; don't confuse it with the SC work.
 
 ## Context handoff protocol
 
-At ~75% context: tick `MILESTONES.md`, add a session-log entry, rewrite this
-file, commit and push.
+At ~75% context: tick `MILESTONES.md` (Phase 11), add a session-log entry,
+rewrite this file, commit and push.

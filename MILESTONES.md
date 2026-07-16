@@ -373,7 +373,11 @@ original); going beyond needs `kSize` made runtime (see REFACTOR_PLAN follow-up)
 - [x] Save validation (bounds, ≥1 spawn, stray objects, empty-map warnings)
 - [x] Game integration: `discoverCustom` lists every custom level in a folder in
       the main menu; `data/custom/` convention + `edit.bat` / `play-custom.bat`
-- [ ] Smart terrain brushes (auto-pick shore/cliff transition pieces) — v2
+- [~] Smart terrain brushes (auto-pick shore/cliff transition pieces) — a coast
+      auto-tiler was built (SEA category, marching-squares over harvested TD shore
+      icons; `mapedit --coast-demo`), but C&C's hand-authored 3×3 shore/cliff art
+      fights per-cell auto-tiling. **Superseded by the StarCraft-terrain pivot
+      (Phase 11)** — keeping SC's ISOM terrain instead. Coast code still present.
 - [ ] In-window New-Level dialog (size chosen via CLI today) — v2
 
 Verified end-to-end: author in mapedit → save to `data/custom/` → loads and
@@ -485,6 +489,31 @@ dir is truncated `TEMPERAT` but palette base is `temperat`. TD TMP has no land
 control map, so sim passability must come from the template table, not the tile.
 House names: GoodGuy=GDI, BadGuy=Nod, Neutral=civilian.
 
+## Phase 11 — StarCraft terrain for the editor 🚧 (started 2026-07-15, session 16)
+
+The C&C terrain editor is janky because C&C's shore/cliff art is hand-authored
+3×3 macro-blocks, hostile to per-cell auto-tiling. **Decision (user):** replace
+the *editor's terrain* with StarCraft tiles + StarCraft's isometric (ISOM)
+auto-tiling, added as a **parallel** system. C&C buildings/units/vehicles and
+all gameplay are untouched; the C&C `TMP`/theater path stays. Square top-down
+grid kept (SC tiles are 32px, sampled to our 24px cell). SC assets are
+personal-use only, gitignored under `data/` — never committed.
+
+- [x] Assets: SC:R (`C:\Program Files (x86)\StarCraft`, CASC) tileset files
+      extracted via CascView → `data/assets/starcraft/tileset/TileSet/`
+      (`.cv5 .vx4ex .vr4 .vf4 .wpe`, all 8 tilesets).
+- [x] Tile decoder `tools/sc_tiles.py` (cv5+vx4ex+vr4+wpe → megatiles);
+      verified badlands/jungle render correctly to `renders/sc/`.
+- [x] **Faithful ISOM ported to Python** `tools/sc_isom.py` from the MIT
+      reference `TheNitesWhoSay/IsomTerrain` (`IsomApi.h`). Paint a terrain type
+      with a diamond brush → StarEdit-identical cliffs, coastlines, and fields
+      auto-tile. Validated visually (`renders/sc/isom_paint_demo.png`).
+- [ ] Fix junction hash-misses when two features are painted directly adjacent
+      (black tiles at incompatible-terrain corners).
+- [ ] Port the tileset loader + ISOM to C++ as a new parallel map format.
+- [ ] Editor paint mode: brush terrain types, live auto-resolve, render with
+      C&C units on top.
+
 ---
 
 ## Context handoff protocol
@@ -508,6 +537,19 @@ carries the delta. Update this file's checkboxes *before* writing a handoff.
 
 ### Session log
 
+- **2026-07-15 (session 16): map-editor terrain → StarCraft pivot (Phase 11).**
+  Started by building a **smart coastline** auto-tiler in `mapedit` (SEA
+  category: paint a water field, marching-squares picks TD shore icons harvested
+  by pixel/land-type classification; `--coast-demo`, `.ini.mask` sidecar). It
+  works but C&C's 3×3 shore art fights per-cell auto-tiling, so with the user we
+  **pivoted the editor's terrain to StarCraft**. Added `mapedit --render[/--grid]`
+  full-map terrain dumps + `tools/render_td_grid.py` + `render_index.py` (studied
+  all 72 TD campaign maps → `renders/levels/`). Then: decoded SC:R tilesets
+  (`tools/sc_tiles.py`) and **ported StarCraft's faithful ISOM auto-tiling**
+  (`tools/sc_isom.py`, from MIT `IsomTerrain/IsomApi.h`) — validated with a paint
+  demo (cliffs + coastlines + fields resolve exactly like StarEdit). Next: C++
+  port (tileset loader + ISOM) as a parallel map format, then editor paint mode.
+  See user memory `starcraft-terrain-pivot` for the full format/algorithm notes.
 - **2026-07-14 (session 15): Phase 7 polish — awake-AI structure (Track B #1).**
   Gave the *awake* AI (skirmish + trigger-woken campaign houses) real structure:
   a parsed `[Base]` list it (re)builds in order (Next_Buildable), and
